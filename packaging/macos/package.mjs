@@ -16,6 +16,17 @@ async function getHash(filePath) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+// Apple application bundles contain framework symlink layouts that Node's
+// recursive copy can mis-handle on macOS. ditto is the native bundle copier;
+// retain fs.cp for layout fixtures on other platforms.
+export async function copyRuntimeBundle(source, destination, { platform = process.platform, run = nativeCommand } = {}) {
+  if (platform === 'darwin') {
+    run('/usr/bin/ditto', [source, destination]);
+    return;
+  }
+  await fs.cp(source, destination, { recursive: true, verbatimSymlinks: true });
+}
+
 // CodexBWAI — bounded XML transformation; reject unsupported/duplicate values.
 // The pinned runtime is the only production plist source. No dynamic XML input.
 export function transformPlist(xml, version = null) {
@@ -193,7 +204,7 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
   const outApp = path.join(absOutDir, appName);
 
   // Copy Electron app, preserving relative symlinks
-  await fs.cp(electronApp, outApp, { recursive: true, verbatimSymlinks: true });
+  await copyRuntimeBundle(electronApp, outApp);
 
   // Rename executable
   const macosDir = path.join(outApp, 'Contents', 'MacOS');
@@ -270,6 +281,24 @@ function nativeCommand(command, args) {
   }
 }
 
+export function signMacApp(appPath, run = nativeCommand) {
+  // The official Electron archive contains nested ad-hoc components. Once the
+  // outer bundle changes, re-seal the complete bundle before strict validation.
+  run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', '--preserve-metadata=entitlements', appPath]);
+  run('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath]);
+}
+
+export function removeMacStagingDirectory(stagingDir, { tmpDir = os.tmpdir(), run = nativeCommand } = {}) {
+  const resolvedStage = path.resolve(stagingDir);
+  const resolvedTmp = path.resolve(tmpDir);
+  if (path.dirname(resolvedStage) !== resolvedTmp || !/^blastcast-mac-stage-[A-Za-z0-9]+$/.test(path.basename(resolvedStage))) {
+    throw new Error(`Refusing to remove non-BlastCast staging directory: ${resolvedStage}`);
+  }
+  // Electron's Node mode treats .asar files specially, which can leave its own
+  // fs.rm waiting indefinitely. The native remover sees the bounded temp tree.
+  run('/bin/rm', ['-rf', resolvedStage]);
+}
+
 export async function createMacInstaller({ appPath, outDir, stagingDir, version, targetArch, run = nativeCommand }) {
   if (!/^\d+\.\d+\.\d+$/.test(version) || !['darwin-arm64', 'darwin-x64'].includes(targetArch)) throw new Error('Invalid installer version or architecture');
   const appPlist = await fs.readFile(path.join(appPath, 'Contents', 'Info.plist'), 'utf8');
@@ -283,7 +312,7 @@ export async function createMacInstaller({ appPath, outDir, stagingDir, version,
 </dict></plist>\n`);
   const payload = path.join(stagingDir, 'installer-root');
   await fs.mkdir(payload);
-  await fs.cp(appPath, path.join(payload, 'BlastCast.app'), { recursive: true, verbatimSymlinks: true });
+  await copyRuntimeBundle(appPath, path.join(payload, 'BlastCast.app'), { run });
   const plist = path.join(stagingDir, 'components.plist');
   await fs.writeFile(plist, componentPlist);
   const component = path.join(stagingDir, 'BlastCast-component.pkg');
@@ -331,12 +360,10 @@ export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, bu
       archiveVerification: { digest: actualHash, source: absArchive }
     });
 
-    // Reseal the changed outer bundle only. Nested Electron components retain
-    // their upstream signatures; do not recursively stamp one entitlement set.
+    // Re-seal the changed bundle and its nested ad-hoc Electron components.
     res.inventory.status.signing = 'ad-hoc development signature; no Developer ID or notarization';
     await fs.writeFile(path.join(res.appPath, 'Contents', 'Resources', 'inventory.json'), JSON.stringify(res.inventory, null, 2));
-    nativeCommand('/usr/bin/codesign', ['--force', '--sign', '-', '--preserve-metadata=entitlements', res.appPath]);
-    nativeCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', res.appPath]);
+    signMacApp(res.appPath);
     if (buildPkg) {
       res.packagePath = await createMacInstaller({ appPath: res.appPath, outDir, stagingDir,
         version: res.inventory.version, targetArch });
@@ -364,7 +391,7 @@ export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, bu
 
     return res;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true });
+    removeMacStagingDirectory(stagingDir);
   }
 }
 

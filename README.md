@@ -8,7 +8,7 @@ browser, and the recording files stay under the host's control.
 
 > **Buy an activation key:** _&lt;where to buy your key&gt;_
 >
-> Already have a key? Official downloads will appear under
+> Already have a key? Download BlastCast from
 > [GitHub Releases](https://github.com/blastworksai/blastcast/releases).
 
 ![BlastCast studio with a three-camera scene](docs/images/studio-overview.png)
@@ -44,10 +44,16 @@ this repository or in the application package.
 
 ## Current build
 
-BlastCast 0.2.3 has a verified Windows x64 installer, but it has not yet been
-uploaded to GitHub Releases. The Windows build is not code-signed, so Windows
-may show an unknown-publisher warning. macOS and Linux are product targets, but
-no equivalent 0.2.3 installer is published yet.
+BlastCast 0.2.3 is available for:
+
+- [Windows x64](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-windows-x64.exe)
+- [macOS Apple Silicon](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-macos-arm64.pkg)
+- [Linux amd64](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-linux-amd64.deb)
+
+These early builds are not publisher-signed. Windows may show an
+unknown-publisher warning, macOS may require you to approve the app in Privacy
+& Security, and the Debian package is unsigned. Verify downloads against the
+`SHA256SUMS.txt` file attached to the release.
 
 ## Source and licence
 
@@ -62,8 +68,8 @@ activation keys, or other private data in public issues or pull requests.
 
 ## Project status
 
-BlastCast is under active development. Publisher signing and installers for
-additional operating systems are still in progress.
+BlastCast is under active development. Publisher signing, notarization, and
+additional architectures are still in progress.
 
 ---
 

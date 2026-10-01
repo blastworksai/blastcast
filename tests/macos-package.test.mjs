@@ -5,7 +5,7 @@ import assert from 'node:assert';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assembleMacApp, transformPlist, createMacInstaller, componentPlist } from '../packaging/macos/package.mjs';
+import { assembleMacApp, transformPlist, createMacInstaller, componentPlist, copyRuntimeBundle, signMacApp, removeMacStagingDirectory } from '../packaging/macos/package.mjs';
 
 describe('macOS Package builder (Layout Assembly)', () => {
   let tempBase;
@@ -108,6 +108,44 @@ describe('macOS Package builder (Layout Assembly)', () => {
         'data'
       );
     }
+  });
+
+  it('uses ditto to copy application bundles on macOS', async () => {
+    const calls = [];
+    await copyRuntimeBundle('/runtime/Electron.app', '/output/BlastCast.app', {
+      platform: 'darwin',
+      run: (cmd, args) => calls.push({ cmd, args })
+    });
+    assert.deepEqual(calls, [{
+      cmd: '/usr/bin/ditto',
+      args: ['/runtime/Electron.app', '/output/BlastCast.app']
+    }]);
+  });
+
+  it('deep-signs and strictly verifies the complete macOS bundle', () => {
+    const calls = [];
+    signMacApp('/output/BlastCast.app', (cmd, args) => calls.push({ cmd, args }));
+    assert.deepEqual(calls, [
+      { cmd: '/usr/bin/codesign', args: ['--force', '--deep', '--sign', '-', '--preserve-metadata=entitlements', '/output/BlastCast.app'] },
+      { cmd: '/usr/bin/codesign', args: ['--verify', '--deep', '--strict', '/output/BlastCast.app'] }
+    ]);
+  });
+
+  it('restricts native cleanup to a BlastCast directory directly under the temporary root', () => {
+    const calls = [];
+    removeMacStagingDirectory('/tmp/blastcast-mac-stage-Ab12', {
+      tmpDir: '/tmp',
+      run: (cmd, args) => calls.push({ cmd, args })
+    });
+    assert.deepEqual(calls, [{ cmd: '/bin/rm', args: ['-rf', '/tmp/blastcast-mac-stage-Ab12'] }]);
+    assert.throws(
+      () => removeMacStagingDirectory('/tmp/unrelated', { tmpDir: '/tmp', run: () => {} }),
+      /Refusing to remove non-BlastCast staging directory/
+    );
+    assert.throws(
+      () => removeMacStagingDirectory('/tmp/nested/blastcast-mac-stage-Ab12', { tmpDir: '/tmp', run: () => {} }),
+      /Refusing to remove non-BlastCast staging directory/
+    );
   });
 
   it('builds a fixed-location installer containing only the app, with stable upgrade metadata', async () => {
