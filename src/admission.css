@@ -1,0 +1,27 @@
+/* DiuleJ — BCAST-3 admission panel scoped styles.
+   Blastworks amber #ffab01, charcoal #232323, white.
+   Parent must copy/link this file so desktop CSP style-src 'self' is satisfied. */
+
+.bcast-admission { font-family: system-ui, -apple-system, sans-serif; color: #fff; background: #232323; padding: 12px; border-radius: 8px; max-width: 420px; }
+.bcast-admission h3 { margin: 0 0 8px; font-size: 14px; color: #ffab01; font-weight: 600; letter-spacing: 0.3px; }
+.bcast-admission-empty { color: #999; font-size: 13px; padding: 8px 0; }
+.bcast-admission-list { list-style: none; margin: 0; padding: 0; }
+.bcast-admission-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-bottom: 1px solid #333; font-size: 13px; gap: 8px; }
+.bcast-admission-item:last-child { border-bottom: none; }
+.bcast-admission-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bcast-admission-phase { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 8px; flex-shrink: 0; }
+.bcast-admission-phase[data-phase="pending"] { color: #ffab01; }
+.bcast-admission-phase[data-phase="admitted"] { color: #4caf50; }
+.bcast-admission-phase[data-phase="rejected"],
+.bcast-admission-phase[data-phase="removed"],
+.bcast-admission-phase[data-phase="revoked"],
+.bcast-admission-phase[data-phase="expired"] { color: #f44336; }
+.bcast-admission-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.bcast-admission-btn { border: none; border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer; font-weight: 500; transition: opacity 0.15s; }
+.bcast-admission-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.bcast-admission-btn:focus-visible { outline: 2px solid #ffab01; outline-offset: 2px; }
+.bcast-admission-btn--admit { background: #ffab01; color: #232323; }
+.bcast-admission-btn--reject { background: #555; color: #fff; }
+.bcast-admission-btn--remove { background: #d32f2f; color: #fff; }
+.bcast-admission-btn--revoke { background: #555; color: #fff; }
+.bcast-admission-error { color: #f44336; font-size: 12px; padding: 4px 0; }

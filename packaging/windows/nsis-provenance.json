@@ -1,0 +1,13 @@
+{
+  "author": "CodexBWAI",
+  "version": "3.13",
+  "source": "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip",
+  "sha256": "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8",
+  "downloaded": "2026-09-29",
+  "licenseSource": "nsis-3.13/COPYING inside the verified archive",
+  "usedLicense": "zlib/libpng",
+  "compression": "zlib only",
+  "ownerApproval": "einh selected “Approve NSIS and download (Recommended)” on 2026-09-29: NSIS 3.13 official SourceForge download and zlib/libpng policy exception, using zlib compression only; no bzip2 or LZMA use.",
+  "publisherSigning": "Not performed; separate open step",
+  "installationPerformed": false
+}

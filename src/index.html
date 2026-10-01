@@ -1,0 +1,150 @@
+<!doctype html>
+<!-- CodexBWAI — implementation of einh's supplied BlastCast redesign. -->
+<html lang="en" data-theme="dark">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlastCast · Your studio</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="blastcast.css"><link rel="stylesheet" href="admission.css"><link rel="stylesheet" href="studio.css"><script type="module" src="studio.js"></script></head>
+<body><div id="activation-lock" class="activation-lock" hidden><div><img src="logo-icon.svg" alt=""><h1>Activate BlastCast</h1><p>Enter a valid activation key in Settings to use the studio.</p><button id="open-activation" class="primary">Open activation settings</button></div></div><div id="studio" class="bc-studio">
+<header class="bc-topbar"><img class="bc-topbar__logo" src="logo-icon.svg" alt=""><h1 class="bc-topbar__name">BlastCast</h1><div class="bc-grow"></div><span id="shell-status" class="bc-status" role="status">Devices off</span><span id="recording-live" class="recording-live" hidden>● LIVE</span><button id="open-settings" class="secondary" aria-haspopup="dialog">Settings</button></header>
+<div class="bc-studio__body">
+<main class="bc-studio__main" aria-label="Studio preview">
+<div class="section-heading"><h2 id="preview-heading">Your preview</h2><span id="preview-badge" class="pill">Devices off</span></div>
+        <div class="viewfinder">
+          <video id="preview" autoplay playsinline muted aria-label="Your camera preview" hidden></video>
+          <canvas id="composed" width="1920" height="1080" aria-label="Composed scene preview" class="composed-canvas"></canvas>
+          <div id="preview-empty" class="empty-preview"><div class="camera-icon" aria-hidden="true">◉</div>
+            <h3>Preview off</h3><p>Enable your camera or microphone to begin.</p></div>
+
+        </div>
+          <div class="viewfinder-footer"><span class="host-tag">You <span>HOST</span></span><span id="resolution-label">Camera off</span><span id="output-label">Recording output 1920×1080</span></div>
+<div id="scene-controls-container" class="scene-controls-container"></div>
+<div class="screen-controls"><button id="share-screen" class="secondary">Share screen</button><label for="screen-source">Screen in scene</label><select id="screen-source" aria-describedby="screen-status"><option value="none">No screen</option></select></div><p id="screen-share-prompt" class="small screen-share-prompt" role="status" hidden>A guest is sharing a screen. Choose a screen to place it in the scene.</p><p id="screen-status" class="small status" role="status">Screen sharing is off.</p>
+<p id="scene-status" class="status" role="status" aria-live="polite">Loading scene…</p>
+<div class="preview-controls" hidden><button id="start-preview" class="secondary">Start preview <span aria-hidden="true">↗</span></button><button id="stop-preview" class="secondary" disabled>Stop preview</button><span id="capture-note" class="privacy-note">Preview only · Not recording</span></div>
+<p id="preview-status" class="status" role="status">Your camera and microphone are off.</p>
+</main>
+<aside class="bc-panel" aria-label="Session">
+<div class="bc-tabs" role="tablist" aria-label="Session panels"><button id="guests-tab" class="bc-tab" role="tab" aria-selected="true" aria-controls="guests-pane">Guests <span id="guest-count" class="bc-tab__count">0</span></button><button id="recordings-tab" class="bc-tab" role="tab" aria-selected="false" aria-controls="recordings-pane" tabindex="-1">Recordings <span id="recording-count" class="bc-tab__count">0</span></button></div>
+<section id="guests-pane" class="bc-panel__body" role="tabpanel" aria-labelledby="guests-tab">
+<div class="host-row"><strong>You</strong><span class="bc-meta">Host</span></div>
+<div id="guest-empty" class="bc-empty"><h2 class="bc-heading">No guests yet</h2><p class="bc-body">Create an invite link and send it. Guests wait here until you admit them.</p></div>
+<button id="guest-toolbar" class="secondary" aria-controls="guest-connection" aria-expanded="false" aria-haspopup="dialog">Create guest invite</button>
+<ul id="guest-pending" aria-label="Pending guests"></ul>
+<h2 id="call-heading">Live guests</h2><div id="call-guests"></div>
+<div class="call-audio-controls"><div class="hear-row"><label for="hear-guests">Hear guests</label><button id="hear-guests" class="bc-switch" role="switch" aria-label="Hear guests" aria-checked="true"></button></div><p class="small">Guest levels also set the mixed recording.</p><button id="enable-call-audio" class="secondary" disabled hidden>Enable call audio</button><p id="call-audio-status" class="small status" role="status">Enable your devices to call admitted guests.</p></div>
+</section>
+<section id="recordings-pane" class="bc-panel__body" role="tabpanel" aria-labelledby="recordings-tab" hidden>
+        <p id="recording-status" class="status" role="status">Record saves the selected scene with mixed audio, plus a separate original from each participant admitted when recording starts. Admit everyone before recording.</p>
+<button id="open-recording" class="secondary" disabled>Open recording</button>        <section aria-labelledby="originals-heading">
+          <h2 id="originals-heading">Recording status</h2>
+          <p id="synchronization-note" class="small status">A saved recording does not confirm synchronization. Timing has not been measured.</p>
+          <div class="recording-table-wrap">
+            <table class="recording-table" aria-labelledby="originals-heading" aria-describedby="synchronization-note">
+              <thead><tr><th scope="col">Recording</th><th scope="col">Delivery</th><th scope="col">Synchronization</th></tr></thead>
+              <tbody id="recording-rows"></tbody>
+            </table>
+          </div>
+          <p id="originals-status" class="status" role="status">Separate originals start with Record.</p>
+          <p id="host-source-status" class="small status" role="status">Your camera and microphone are not recording.</p>
+          <div class="preview-controls"><button id="import-guest-recovery" class="secondary" disabled>Import guest recovery…</button>
+            <button id="finish-originals" class="secondary" disabled>Finish with missing originals…</button></div>
+        </section>
+
+</section></aside></div>
+<div id="shell-errors" class="shell-errors" role="alert" hidden></div>
+<footer class="bc-bottombar">
+<section class="device-controls" aria-labelledby="devices-heading"><h2 id="devices-heading" class="sr-only">Camera and microphone</h2>
+<div class="device-field"><label for="microphone">Microphone</label><div class="device-row"><button id="mute-microphone" class="secondary" aria-label="Enable microphone" aria-pressed="true">Mic off</button><select id="microphone"><option value="">System default microphone</option></select></div><div class="meter-row"><meter id="mic-level" min="0" max="100" value="0" aria-label="Microphone input level"></meter><span id="mic-label">Mic off</span></div></div>
+<div class="device-field"><label for="camera">Camera</label><div class="device-row"><button id="toggle-camera" class="secondary" aria-label="Enable camera" aria-pressed="true">Camera off</button><select id="camera"><option value="">System default camera</option></select></div></div>
+</section>
+<div class="record-controls"><span id="recording-clock" class="bc-meta" aria-label="Recording elapsed time">00:00:00</span><span id="record-trigger" class="record-trigger" role="group" aria-label="Record" tabindex="0" title="Choose a recording folder before recording." aria-describedby="record-disabled-reason"><button id="record" class="primary" disabled>● Record</button><span id="record-disabled-reason" class="sr-only">Choose a recording folder before recording.</span></span><button id="stop-recording" class="secondary" disabled>Stop recording</button></div>
+<div class="folder-summary"><div id="folder-label" class="folder-label">No folder selected</div><button id="choose-folder" class="secondary">Choose folder</button></div>
+<p id="device-status" class="small status" role="status">Choose camera or microphone to allow access and list devices.</p>
+</footer>
+<dialog id="studio-settings" aria-labelledby="settings-heading"><div class="settings-heading"><h2 id="settings-heading">Settings</h2><button id="close-settings" class="secondary">Close</button></div>
+<section id="activation-card" class="setup-card" aria-labelledby="activation-heading"><h3 id="activation-heading">Activation</h3><p class="small">BlastCast requires a key purchased from Blastworks.ai or issued directly by Blastworks.ai.</p><div id="activation-entry"><label for="activation-key">Activation key</label><textarea id="activation-key" rows="4" autocomplete="off" spellcheck="false" placeholder="BCAST1.…"></textarea><div class="preview-controls"><button id="activate-license" class="primary">Activate BlastCast</button></div></div><div id="activation-current" hidden><p class="small">Activated for <strong id="activation-holder"></strong> · <span id="activation-kind"></span></p><button id="deactivate-license" class="secondary">Deactivate on this computer</button></div><p id="activation-status" class="small status" role="status">Checking activation…</p></section>
+<section class="setup-card" aria-labelledby="backdrops-heading"><h3 id="backdrops-heading">Upload backdrops</h3><p class="small">Choose one 1920 × 1080 PNG for each layout. Camera layouts need transparent camera openings matching that layout. Screen-share backgrounds sit behind the dynamically positioned frames.</p><div id="backdrop-layouts" class="backdrop-layouts"></div><p id="backdrop-status" class="status" role="status">Loading saved backdrops…</p></section>
+<section class="setup-card"><h3>Devices and output</h3><label for="quality">Recording quality</label><select id="quality"><option value="1080">1080p</option><option value="2160">4K</option></select><p class="small">4K records a 3840 × 2160 scene and uses more CPU, storage and upload bandwidth. Camera and guest inputs are scaled to fit without changing their originals.</p><button id="refresh-devices" class="text-button">Refresh devices</button></section>
+        <section class="setup-card" aria-labelledby="folder-heading">
+          <div class="card-heading"><h2 id="folder-heading">Recording folder</h2></div>
+
+
+          <div class="folder-actions"><button id="settings-choose-folder" class="secondary">Choose folder</button><button id="check-folder" class="text-button" disabled>Check again</button><button id="open-folder" class="text-button" disabled>Open folder</button></div>
+          <p id="folder-status" class="small status" role="status">We’ll check that BlastCast can write here.</p>
+        </section>
+    <footer class="readiness"><span id="ready-dot" class="ready-dot" aria-hidden="true"></span><div><strong id="ready-title">Let’s get your studio ready.</strong><p id="ready-detail">Enable your devices and choose a writable folder.</p></div><span class="slice-label">Local recording</span></footer>
+<section id="software-card" class="setup-card"><h3>BlastCast <span id="app-version"></span></h3><button id="check-updates" class="secondary">View source and releases on GitHub</button><p id="update-status" class="small status" role="status">BlastCast source and release downloads are published in the public GitHub repository.</p></section>
+</dialog>
+<dialog id="guest-connection" aria-labelledby="guest-heading"><div class="settings-heading"><h2 id="guest-heading">Guest invitations</h2><button id="close-guest-connection" class="secondary">Close</button></div>
+    <section id="guest-panel" class="guest-panel" hidden>
+      <p id="guest-settings-summary" class="small">Loading guest settings…</p>
+      <div class="preview-controls"><button id="create-guest-invite" class="primary" disabled>Generate invite link</button><button id="edit-guest-settings" class="secondary" disabled>Edit guest settings</button><button id="forget-guest-settings" class="text-button" hidden>Forget saved settings</button></div>
+      <div id="guest-forget-confirm" hidden><p>Forget the saved guest address and relay credentials on this computer? This does not delete your provider accounts.</p><button id="confirm-forget-guest-settings" class="secondary">Forget settings</button><button id="cancel-forget-guest-settings" class="secondary">Keep settings</button></div>
+      <div class="preview-controls"><button id="copy-guest-invite" class="secondary" disabled>Copy link</button><button id="revoke-guest-invites" class="secondary" disabled>Close invitations</button><button id="stop-guests" class="secondary" disabled>Turn guest access off</button></div>
+      <label>Invitation<input id="guest-invite" readonly autocomplete="off" aria-label="Latest guest invitation"></label>
+      <p id="guest-invite-status" class="small status" role="status">Set up once, then generate a link whenever you need one.</p>
+      <section id="guest-wizard" hidden aria-labelledby="guest-wizard-heading">
+        <h3 id="guest-wizard-heading">Guest setup · <span id="guest-wizard-step-label">1 of 3</span></h3>
+        <div id="guest-domain-step"><label>Do you have a domain?<select id="helper-domain"><option value="">Choose Yes or No</option><option value="no">No — use a free temporary address</option><option value="yes">Yes — use my domain</option></select></label></div>
+        <section id="helper-setup" hidden>
+          <h3 id="helper-heading">Guest address</h3><p id="helper-provider" class="small"></p>
+          <ol id="helper-steps" class="small"></ol>
+          <p id="helper-reference-wrap" class="provider-reference"><a id="helper-reference" href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/" target="_blank" rel="noreferrer">Open the official Cloudflare Tunnel guide ↗</a></p>
+          <figure id="cloudflare-ready-figure" class="instruction-figure"><img src="instructions/cloudflare-tunnel-ready.png" alt="Cloudflare tunnel overview showing one active replica, Healthy status, and the Add route control."><figcaption>After steps 1 and 2, the tunnel shows <strong>Healthy</strong>. Your identifiers are omitted here.</figcaption></figure>
+          <figure id="cloudflare-route-form-figure" class="instruction-figure"><img src="instructions/cloudflare-route-form.png" alt="Cloudflare Add published application form with guests.example.com, an empty path, and Service URL http://127.0.0.1:43821."><figcaption>For step 3, open <strong>Routes</strong>, click <strong>Add route</strong>, choose <strong>Published application</strong>, and enter <strong>http://127.0.0.1:43821</strong> as the Service URL.</figcaption></figure>
+          <figure id="cloudflare-route-ready-figure" class="instruction-figure"><img src="instructions/cloudflare-route-ready.png" alt="Completed Cloudflare Published application route pointing guests.example.com to http://127.0.0.1:43821."><figcaption>Done: the route table shows <strong>Published application</strong> and <strong>http://127.0.0.1:43821</strong>.</figcaption></figure>
+          <p id="helper-domain-note" class="small">Keep Cloudflare account passwords and tunnel tokens outside BlastCast.</p>
+          <label id="wizard-guest-origin-label">Your HTTPS guest address<input id="guest-origin" type="url" placeholder="https://guests.example.com" autocomplete="off"></label>
+          <p id="helper-recovery" class="small"></p>
+        </section>
+        <section id="guest-relay-step" hidden>
+          <h3>ExpressTURN Free</h3><p class="small">Both address options need a media relay. Create a Free account at <a id="expressturn-reference" class="provider-reference" href="https://www.expressturn.com/" target="_blank" rel="noreferrer">ExpressTURN ↗</a> and copy these three fields from its dashboard.</p>
+          <figure class="instruction-figure instruction-figure-narrow"><img src="instructions/expressturn-fields.png" alt="ExpressTURN Free dashboard showing the TURN Servers, Username, and Password fields with example credentials."><figcaption>Copy <strong>TURN Servers</strong>, <strong>Username</strong>, and <strong>Password</strong>. The example credentials are not real.</figcaption></figure>
+          <label>TURN addresses — one per line<textarea id="relay-urls" rows="2" placeholder="free.expressturn.com:3478" autocomplete="off" aria-describedby="relay-url-help"></textarea></label><p id="relay-url-help" class="small field-help">Paste the TURN Servers value exactly as ExpressTURN shows it. BlastCast adds the required <strong>turn:</strong> prefix and UDP transport automatically.</p>
+          <label>Allocation username<input id="relay-username" autocomplete="off" maxlength="128"></label>
+          <label>Allocation password<input id="relay-password" type="password" autocomplete="off" maxlength="512"></label><p id="relay-saved-note" class="small" hidden>Password saved. Leave blank to keep it.</p>
+          <label><input id="relay-free" type="checkbox"> My Free account requires no payment details or automatic upgrade.</label>
+          <details><summary>How relay credentials are used</summary><p class="small">Saved on this computer and shared only with admitted guests. Rotate them in ExpressTURN after a session; guests can retain them until then. Remaining free allowance is not measured.</p><label><input id="relay-only" type="checkbox"> Force relay for troubleshooting</label></details>
+        </section>
+        <p id="guest-wizard-status" class="status" role="status"></p>
+        <div class="preview-controls"><button id="guest-wizard-back" class="secondary" hidden>Back</button><button id="guest-wizard-next" class="primary">Continue</button><button id="save-guest-settings" class="primary" hidden>Save &amp; generate</button><button id="guest-wizard-cancel" class="secondary">Cancel</button></div>
+      </section>
+      <details id="guest-troubleshooting"><summary>Troubleshooting</summary>
+      <details id="guest-advanced"><summary>Advanced connection settings</summary>
+      <div class="guest-route">
+        <label>Manual HTTPS address<input id="guest-manual-origin" type="url" autocomplete="off" placeholder="https://guests.example.com"></label><button id="check-guest-route" class="secondary">Check manual route</button>
+        <label>Route type<select id="guest-route-type"><option value="direct">Direct forwarding</option><option value="tunnel">Manual HTTPS tunnel/provider</option></select></label>
+        <label>Local port<input id="guest-port" type="number" min="1024" max="65535" value="43821"></label>
+      </div>
+      <p id="guest-route-note" class="small">Guest listener: <strong id="guest-target">127.0.0.1:43821</strong>.</p>
+      <section id="direct-access-card" class="direct-access-card" aria-labelledby="direct-access-heading">
+        <h3 id="direct-access-heading">Optional temporary router access</h3>
+        <p class="small">For direct hosting, BlastCast can ask a PCP-capable router for one temporary TCP mapping to an HTTPS proxy already running on this computer. It does not expose the plain BlastCast listener, change firewall rules, enable router features or prove outside reachability.</p>
+        <button id="show-direct-access" class="secondary" disabled>Show temporary router access</button>
+        <div id="direct-access-plan" hidden>
+          <p id="direct-access-summary" class="small"></p>
+          <p class="small">Approving sends this exact request for at most 30 minutes. BlastCast refreshes it only while guest access is active and removes only this app-owned lease on close. Your HTTPS proxy must forward to <strong id="direct-guest-target">127.0.0.1:43821</strong>.</p>
+          <button id="approve-direct-access" class="secondary" disabled>Approve temporary access</button>
+        </div>
+        <p id="direct-access-status" class="small status" role="status">No router change made.</p>
+      </section>
+      </details>
+      <p id="guest-route-status" class="small status" role="status">Guest access is off.</p>
+      <ol id="guest-readiness-list" class="readiness-list" aria-label="Invitation readiness">
+        <li data-readiness="listener">Local listener <span>Not started</span></li>
+        <li data-readiness="address">Reachable address <span>Not proven</span></li>
+        <li data-readiness="https">Valid HTTPS <span>Not proven</span></li>
+        <li data-readiness="route">Forwarding / firewall <span>Not proven</span></li>
+        <li data-readiness="outside">Outside-network check <span>Not proven</span></li>
+      </ol>
+      <div id="guest-readiness-actions" hidden>
+        <label>Private readiness link<input id="guest-readiness-link" readonly autocomplete="off" aria-label="Private readiness link"></label>
+        <div class="preview-controls"><button id="copy-guest-readiness" class="secondary" disabled>Copy check link</button><button id="fail-guest-readiness" class="text-button" disabled>Outside check did not open</button></div>
+        <p class="small">Open this link on a phone with Wi-Fi off or another trusted outside connection. Do not bypass a certificate warning.</p>
+      </div>
+      </details>
+
+    </section>
+
+</dialog>
+<dialog id="stop-confirmation" aria-labelledby="stop-confirmation-title"><h2 id="stop-confirmation-title">Stop recording?</h2><p>Stop this recording and finish saving its files, or keep recording.</p><div class="preview-controls"><button id="keep-recording" class="secondary" autofocus>Keep recording</button><button id="confirm-stop-recording" class="primary">Stop recording</button></div></dialog>
+</div></body></html>

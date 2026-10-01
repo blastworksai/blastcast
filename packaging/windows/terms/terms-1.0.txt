@@ -1,0 +1,24 @@
+BlastCast — terms of use
+
+Provider: BlastworksAI
+Business address: Kuytekopstraat 5, 2880 Bornem, Belgium
+Support contact: blastworksai@gmail.com
+Privacy contact: blastworksai@gmail.com
+Effective date: 29 September 2026
+Terms version: 1.0
+
+BlastCast is an application for hosting and recording conversations. BlastCast is provided “as is”, with no commitment to future updates. Keep independent backups of recordings you need, and verify that your chosen devices and recording destination work before an important session.
+
+Each BlastCast license covers use by one buyer. The buyer may install the software on any number of physical devices, but may run only one instance of BlastCast at a time across all installations.
+
+You may use BlastCast for personal or commercial conversations. You are responsible for having the rights and permissions required for the material you record or share, and for informing participants about recording and obtaining any consent required for your use. Do not use BlastCast to infringe other people's rights or break applicable law.
+
+Recording starts when the host uses the recording controls. The application saves recordings on the host's computer. When guest originals are enabled, guest browsers capture and transfer separate originals to the host; interrupted transfers may require recovery. Stopping a live call does not by itself prove that all originals have reached the host. Check the application's completion status and retained files.
+
+Public guest access can use services you configure, including an HTTPS helper and a media relay. Those services have their own terms, availability and usage limits. You are responsible for the account and credentials you supply. ExpressTURN Free currently has no charges or automatic upgrade, but sustained excessive usage may lead to restrictions. Its shared account credentials should be regenerated after a session when session access must end.
+
+BlastCast does not guarantee uninterrupted calls, successful recording, complete recovery or a particular connection latency. These limitations do not remove any rights that applicable law gives you and that cannot be excluded.
+
+Third-party components remain covered by their own licenses. Their notices are supplied with the application; accepting these terms does not replace or restrict rights granted by those licenses.
+
+I have read and accept the BlastCast terms, version 1.0.

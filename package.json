@@ -1,0 +1,19 @@
+{
+  "name": "blastcast",
+  "version": "0.2.3",
+  "private": true,
+  "license": "LicenseRef-BlastCast-Source-Available-1.0",
+  "description": "A host-owned podcast studio",
+  "author": "BlastworksAI",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
+    "license:keys": "node scripts/license-keys.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node scripts/check-dependencies.mjs && node --test tests/*.test.mjs",
+    "start": "npm run build && node scripts/start.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

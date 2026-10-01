@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>BlastCast · Confirm guest access</title>
+  <link rel="stylesheet" href="readiness.css">
+  <script type="module" src="readiness.js"></script>
+</head>
+<body>
+  <main class="card" aria-labelledby="heading">
+    <p class="eyebrow">BlastCast connection check</p>
+    <h1 id="heading">Confirm this guest address works outside the host’s network</h1>
+    <p class="intro">Open this private link on a phone with Wi-Fi off, or on another trusted outside connection. This checks the guest page and signaling route. It does not provide TURN or prove that media will connect.</p>
+    <form id="readiness-form">
+      <label><input id="outside-network" type="checkbox"> This device is using a different network from the host computer.</label>
+      <label><input id="secure-without-bypass" type="checkbox"> The page opened as HTTPS without bypassing a certificate warning.</label>
+      <button id="confirm-readiness" type="submit">Confirm guest access</button>
+    </form>
+    <p id="readiness-status" class="status" role="status" aria-live="polite">Both confirmations are required.</p>
+  </main>
+</body>
+</html>

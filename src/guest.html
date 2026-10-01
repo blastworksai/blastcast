@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlastCast · Guest preview</title><link rel="stylesheet" href="/guest.css"><script src="/bodypix/tf.min.js"></script><script src="/bodypix/body-pix.min.js"></script><script type="module" src="/guest.js"></script></head>
+<body>
+  <header><img src="/Blastworks-Cast-256.png" width="40" height="40" alt=""><h1>BlastCast</h1><span id="guest-mode">Guest preview</span></header>
+  <main>
+    <p id="invitation-status" class="status" role="status">Checking your invitation…</p>
+    <div class="guest-grid">
+      <section aria-labelledby="preview-heading">
+        <section id="guest-host-panel" aria-labelledby="guest-host-heading" hidden>
+          <h2 id="guest-host-heading">Recording view</h2>
+          <video id="guest-host" autoplay playsinline aria-label="Live recording view from the host"></video>
+          <button id="guest-play-audio" class="secondary" hidden>Play call audio</button>
+          <p id="guest-call-status" class="status" role="status">The call starts after admission with your preview on.</p>
+        </section>
+        <section id="guest-screen-panel" hidden aria-labelledby="guest-screen-heading"><h2 id="guest-screen-heading">Host screen share</h2><video id="guest-screen" autoplay playsinline muted aria-label="Shared host screen"></video></section>
+        <div class="actions"><button id="guest-share-screen" class="secondary" disabled>Share screen</button><button id="guest-stop-screen" class="secondary" disabled>Stop sharing</button></div><p id="guest-screen-status" class="status" role="status">Screen sharing is off. Only share a screen you want the host to see and potentially record.</p>
+        <h2 id="preview-heading">Check your camera & microphone</h2>
+        <div class="viewfinder"><video id="guest-preview" autoplay playsinline muted aria-label="Your camera preview"></video><p id="guest-preview-empty">Devices off</p></div>
+        <div class="actions"><button id="guest-stop" class="secondary" disabled>Turn devices off</button></div>
+        <p id="guest-preview-status" class="status" role="status">Your camera and microphone turn on when you ask to join. Nothing is recorded before admission.</p>
+        <p id="guest-original-status" class="status" role="status">Your original starts when the host presses Record.</p>
+        <p class="small">Keep this page open until your original is verified. If delivery cannot finish, save a recovery file before closing this page. A new invitation address cannot read this address’s browser storage.</p>
+        <p class="small">Keep the recovery file until the host confirms import. Browser storage eviction, clearing site data, deleting the file or closing before saving makes undelivered bytes unrecoverable.</p>
+        <p class="small">Use headphones for the episode. Your microphone is never played back through your speakers here.</p>
+      </section>
+      <section class="card" aria-labelledby="setup-heading"><h2 id="setup-heading">Before you join</h2>
+        <label for="guest-camera">Camera</label><select id="guest-camera"><option value="">System default camera</option></select>
+        <label for="guest-background">Camera background</label><select id="guest-background"><option value="off">Off</option><option value="blur">Blur</option><option value="image">Image</option></select>
+        <label id="guest-background-file-label" for="guest-background-file">Background image</label><input id="guest-background-file" type="file" accept="image/png,image/jpeg" disabled>
+        <p id="guest-background-status" class="small status" role="status">Camera background is off. Effects run on this device.</p>
+        <label for="guest-microphone">Microphone</label><select id="guest-microphone"><option value="">System default microphone</option></select>
+        <p class="small">BlastCast uses the best camera resolution this device can supply, up to 4K. The host’s recording quality does not alter your original.</p>
+        <div class="actions"><button id="guest-mute" class="secondary" aria-pressed="false">Mute microphone</button><button id="guest-refresh" class="secondary">Refresh devices</button><button id="guest-save-recovery" class="secondary" disabled>Save recovery file</button><button id="guest-leave" class="secondary" disabled>Leave invitation</button></div>
+        <label for="guest-level">Microphone input</label><meter id="guest-level" min="0" max="100" value="0"></meter>
+        <p id="guest-device-status" class="small status" role="status">Choose camera or microphone to allow access and list devices.</p>
+        <label for="guest-name">Your name</label><input id="guest-name" type="text" maxlength="80" autocomplete="nickname">
+        <label class="consent"><input id="guest-consent" type="checkbox"> I agree that the host may record my camera and microphone for this episode after admitting me.</label>
+        <button id="guest-join" disabled>Ask to join</button>
+        <p id="guest-join-status" class="small status" role="status">Enter your name and agree to recording. Ask to join will turn on your camera and microphone.</p>
+        <p class="small">Admission connects your camera and microphone to the host. The host may then record. Turn devices off or leave to stop sending.</p>
+
+      </section>
+    </div>
+
+  </main>
+</body></html>

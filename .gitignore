@@ -1,0 +1,18 @@
+# Local secrets and private key material
+.env*
+*.pem
+*.key
+*credentials*
+client_secret*.json
+*token*.json
+.mcp.json
+*.mcp.json
+.mcp.local.json
+node_modules
+dist/
+.runtime/
+.smoke/
+.smoke-recording-*/
+.smoke-recording-output.log
+.smoke-studio-scenes-*/
+.evidence/
