@@ -418,7 +418,7 @@ test('incomplete chunk disconnection cleans up activeUploads slot for subsequent
 });
 
 // CodexBWAI: a completed request body can still be waiting on durable storage.
-test('disconnect releases an upload slot even during storage, without releasing its replacement', async t => {
+test('disconnect does not release the upload slot while storage is still writing; the retry is a retryable 409', async t => {
   const port = await freePort(), host = 'test.example.com', origin = 'https://test.example.com';
   const { guests, session, sources } = await setupAdmittedGuest(port, host, origin);
   t.after(() => guests.stop());
@@ -437,13 +437,14 @@ test('disconnect releases an upload slot even during storage, without releasing 
   first.destroy();
   await new Promise(r => setTimeout(r, 30));
   const options = { host, origin, token: session, bufferBody: Buffer.from('a'), headers };
-  const second = request(port, 'POST', '/api/source/chunk', options);
-  // Attach rejection handling immediately so a failed assertion cannot leave a dangling request.
-  second.catch(() => {});
-  await waitFor(() => calls.length === 2);
+  // ClaudeBWAI: the slot is held until the write settles, so the retry is told to come back (409), not let in.
+  assert.equal((await request(port, 'POST', '/api/source/chunk', options)).status, 409);
+  assert.equal(calls.length, 1);
   calls[0]();
   await new Promise(r => setTimeout(r, 20));
-  assert.equal((await request(port, 'POST', '/api/source/chunk', options)).status, 409);
+  const second = request(port, 'POST', '/api/source/chunk', options);
+  second.catch(() => {});
+  await waitFor(() => calls.length === 2);
   calls[1]();
   assert.equal((await second).status, 200);
 });

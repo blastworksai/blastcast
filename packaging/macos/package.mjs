@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { writeIcns } from './icns.mjs';
 
 const PINNED_VERSION = '44.4.5';
 const ARCHIVE_HASHES = {
@@ -55,8 +56,12 @@ export function transformPlist(xml, version = null) {
   }
   set('NSCameraUsageDescription', 'BlastCast needs camera access to record your podcast.');
   set('NSMicrophoneUsageDescription', 'BlastCast needs microphone access to record your podcast.');
+  set('CFBundleIconFile', 'BlastCast.icns', true); // ClaudeBWAI — Electron's generic icon replaced by the brand .icns
   return xml;
 }
+
+export const ICON_SIZES = [16, 32, 64, 128, 256, 512, 1024];
+export const ICON_FILES = ICON_SIZES.map(s => `assets/brand/icons/blastcast-${s}.png`);
 
 export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch, archiveVerification = null }) {
   const resolvedSource = await fs.realpath(sourceDir);
@@ -106,14 +111,14 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
 
   // Validate payload completeness
   const requiredFiles = [
-    'LICENSE','assets/licensing/public-key.txt','desktop/license-key.cjs','desktop/license-store.cjs',
-    'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
-  'dist/recording-status.js', 'dist/synchronization.js',
+    'LICENSE','assets/licensing/public-key.txt','assets/localhost-run-known-hosts.txt','desktop/license-key.cjs','desktop/license-store.cjs',
+    'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
+  'dist/recording-status.js',
     'package.json',
     'desktop/admission.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
-    'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
-    'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
-    'dist/source-protocol.js', 'dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-recovery.js',
+    'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
+    'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
+    'dist/source-protocol.js', 'dist/source-bitrate.js', 'dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js',
     'dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js', 'dist/screen-share-attention.js', 'dist/program-output.js',
     'desktop/signaling.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/peer-call.js', 'dist/audio-mix.js',
     ...['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt'].map(name => `dist/bodypix/${name}`),
@@ -123,7 +128,7 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
     'dist/recording.js', 'dist/preview.js', 'dist/guest.html', 'dist/guest.js', 'dist/guest.css',
     'dist/readiness.html', 'dist/readiness.js', 'dist/readiness.css',
     'dist/Blastworks-Cast-256.png', 'dist/package.json',
-    'assets/brand/Blastworks-Cast-256.png',
+    'assets/brand/Blastworks-Cast-256.png', ...ICON_FILES,
     'assets/scenes/defaults/1cam.png', 'assets/scenes/defaults/2cam.png',
     'assets/scenes/defaults/3cam.png', 'assets/scenes/defaults/4cam.png',
     'assets/scenes/defaults/5cam.png', 'assets/scenes/defaults/6cam.png',
@@ -224,6 +229,11 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
   // CodexBWAI: accept supported upstream plist values and replace each key once.
   const plistPath = path.join(outApp, 'Contents', 'Info.plist');
   await fs.writeFile(plistPath, transformPlist(await fs.readFile(plistPath, 'utf8'), pkg.version));
+
+  // ClaudeBWAI: brand icon, built from the validated PNGs; the plist above points CFBundleIconFile at it.
+  const iconMap = {};
+  for (const size of ICON_SIZES) iconMap[size] = await fs.readFile(path.join(sourceDir, `assets/brand/icons/blastcast-${size}.png`));
+  await fs.writeFile(path.join(outApp, 'Contents', 'Resources', 'BlastCast.icns'), writeIcns(iconMap));
 
   // Copy notices
   for (const file of noticeFiles) {

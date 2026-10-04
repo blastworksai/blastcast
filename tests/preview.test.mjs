@@ -178,3 +178,13 @@ test('unrequested tracks are released and never exposed', async () => {
   await preview.start({ ...selection, cameraEnabled: true, microphoneEnabled: false }, allow);
   assert.equal(unwanted.stopped, 1); assert.equal(shown.getAudioTracks().length, 0); preview.stop();
 });
+
+test('host-only camera ceiling is orientation-neutral: portrait 2160x3840 passes, 4320x2160 fails', async () => {
+  const ultra = { camera: '', microphone: '', height: 2160, cameraEnabled: true, microphoneEnabled: false };
+  const phases = [];
+  for (const settings of [{ width: 2160, height: 3840 }, { width: 4320, height: 2160 }]) {
+    const preview = new Preview(async () => stream(settings), () => {});
+    await preview.start(ultra, allow); phases.push(preview.state.phase); preview.stop();
+  }
+  assert.equal(phases[0], 'live'); assert.equal(phases[1], 'error');
+});

@@ -4,13 +4,16 @@ const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
 const { createSourceStore } = require('./sources.cjs');
-const { createSourceController } = require('./source-controller.cjs');
+const { createSourceController, closeDialog: closeDialogFor } = require('./source-controller.cjs');
 const { createRecordingLibrary } = require('./recording-library.cjs');
 const { installDisplayPicker } = require('./display-picker.cjs');
-const { createStudioPreferences } = require('./studio-preferences.cjs');
+const { createStudioPreferences, MAX_BACKGROUND_BYTES } = require('./studio-preferences.cjs');
+const { decideMediaAccess, statusOf, privacyUrl, screenBlockedMessage } = require('./media-access.cjs');
 const { createRecordingStore } = require('./recording.cjs');
+const { createSessionDiagnostics } = require('./session-diagnostics.cjs');
+const os = require('node:os');
 const { createDestination } = require('./destination.cjs');
-const { trustedFrame, registerBridge, registerRecordingBridge, registerGuestBridge, registerSourceBridge, STUDIO_URL, mediaPermission, allowedStudioNavigation } = require('./boundary.cjs');
+const { trustedFrame, registerBridge, registerRecordingBridge, registerGuestBridge, registerSourceBridge, STUDIO_URL, createDisplayPermission, createChooseScreen, allowedStudioNavigation } = require('./boundary.cjs');
 const { createGuestServer } = require('./guests.cjs');
 const { createFreeTunnel } = require('./free-tunnel.cjs');
 const { createGuestAccess } = require('./guest-access.cjs');
@@ -35,43 +38,43 @@ const assets = new Map([
   ['/1cam.png', 'image/png'], ['/2cam.png', 'image/png'], ['/3cam.png', 'image/png'], ['/4cam.png', 'image/png'],
   ['/5cam.png', 'image/png'], ['/6cam.png', 'image/png'], ['/7cam.png', 'image/png'], ['/8cam.png', 'image/png'],
   ['/screensharevert-8.png', 'image/png'], ['/screensharehorizont-8.png', 'image/png'],
-  ['/tokens.css', 'text/css'], ['/blastcast.css', 'text/css'], ['/studio-shell.js', 'text/javascript'], ['/recording-library.js', 'text/javascript'], ['/invite-automation.js', 'text/javascript'], ['/logo-icon.svg', 'image/svg+xml'],
+  ['/tokens.css', 'text/css'], ['/blastcast.css', 'text/css'], ['/studio-shell.js', 'text/javascript'], ['/recording-library.js', 'text/javascript'], ['/invite-automation.js', 'text/javascript'], ['/invite-list.js', 'text/javascript'], ['/logo-icon.svg', 'image/svg+xml'],
   ['/relay-input.js', 'text/javascript'], ['/screen-share-attention.js', 'text/javascript'], ['/program-output.js', 'text/javascript'],
   ...['cloudflare-tunnel-ready', 'cloudflare-route-form', 'cloudflare-route-ready', 'expressturn-fields'].map(name => [`/instructions/${name}.png`, 'image/png']),
   ...['Regular', 'SemiBold', 'ExtraBold'].map(weight => [`/fonts/BlastworksSans-${weight}.woff2`, 'font/woff2']),
   ['/index.html', 'text/html'], ['/studio.css', 'text/css'],
   ['/studio.js', 'text/javascript'], ['/invites.js', 'text/javascript'], ['/recording.js', 'text/javascript'], ['/preview.js', 'text/javascript'],
-  ['/recording-status.js', 'text/javascript'], ['/synchronization.js', 'text/javascript'],
+  ['/recording-status.js', 'text/javascript'],
   ['/screen-share.js', 'text/javascript'], ['/device-access.js', 'text/javascript'], ['/scenes.js', 'text/javascript'], ['/scene-controls.js', 'text/javascript'],
-  ['/admission.css', 'text/css'], ['/admission-ui.js', 'text/javascript'],
-    ['/source-protocol.js', 'text/javascript'], ['/source-capture.js', 'text/javascript'], ['/source-session.js', 'text/javascript'], ['/source-outbox.js', 'text/javascript'], ['/source-recovery.js', 'text/javascript'],
+  ['/admission.css', 'text/css'], ['/admission-ui.js', 'text/javascript'], ['/media-denial.js', 'text/javascript'], ['/desktop-capture-guard.js', 'text/javascript'],
+    ['/source-protocol.js', 'text/javascript'], ['/source-bitrate.js', 'text/javascript'], ['/source-capture.js', 'text/javascript'], ['/source-session.js', 'text/javascript'], ['/source-outbox.js', 'text/javascript'], ['/source-limits.js', 'text/javascript'], ['/source-recovery.js', 'text/javascript'],
   ['/host-calls.js', 'text/javascript'], ['/peer-call.js', 'text/javascript'], ['/audio-mix.js', 'text/javascript'],
+  ['/session-diagnostics.js', 'text/javascript'], // ClaudeBWAI — session diagnostics log (studio only)
+  // ClaudeBWAI — host camera background (same offline BodyPix files the guest page serves).
+  ['/camera-background.js', 'text/javascript'], ['/bodypix/tf.min.js', 'text/javascript'], ['/bodypix/body-pix.min.js', 'text/javascript'],
+  ['/bodypix/model-stride16.json', 'application/json'], ['/bodypix/group1-shard1of1.bin', 'application/octet-stream'],
 ]);
-const csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
+// ClaudeBWAI — the decision lives in media-access.cjs; a macOS denial skips BlastCast's own dialog.
 async function authorizePreview() {
   if (!licenseStore?.active()) return false;
   if (permissionPending) return false;
   permissionPending = true;
   try {
-    if (!mediaAllowed) {
-      const answer = await dialog.showMessageBox(window, {
+    const { allowed } = await decideMediaAccess({
+      platform: process.platform, mediaAllowed,
+      getStatus: kind => systemPreferences.getMediaAccessStatus(kind),
+      ask: kind => systemPreferences.askForMediaAccess(kind),
+      showDialog: async () => (await dialog.showMessageBox(window, {
         type: 'question', title: 'Camera and microphone access',
         message: 'Allow BlastCast to access your camera and microphone?',
         detail: 'Opening a device list briefly checks available devices. Enabling a camera or microphone keeps that source on until you disable it. Admitting a guest connects your enabled sources to them. Recording starts only when you press Record and is saved on this computer.',
         buttons: ['Allow access', 'Cancel'], defaultId: 1, cancelId: 1,
-      });
-      if (answer.response !== 0) return false;
-    }
-    if (process.platform === 'darwin') {
-      let anyAllowed = false;
-      for (const kind of ['camera', 'microphone']) {
-        if (await systemPreferences.askForMediaAccess(kind)) anyAllowed = true;
-      }
-      if (!anyAllowed) { mediaAllowed = false; return false; }
-    }
-    mediaAllowed = true;
-    return true;
+      })).response === 0,
+    });
+    mediaAllowed = allowed;
+    return allowed;
   } finally { permissionPending = false; }
 }
 
@@ -87,21 +90,26 @@ app.whenReady().then(async () => {
   await local.protocol.handle('app', async request => {
     const url = new URL(request.url);
     const mime = assets.get(url.pathname);
-    if (url.host !== 'studio' || request.method !== 'GET' || !mime || url.search) return new Response('Not found', { status: 404 });
+    const modelQuery = url.pathname === '/bodypix/model-stride16.json' && url.search === '?tfjs-format=file';
+    if (url.host !== 'studio' || request.method !== 'GET' || !mime || (url.search && !modelQuery)) return new Response('Not found', { status: 404 });
     try {
       return new Response(await fs.readFile(path.join(__dirname, '../dist', url.pathname.slice(1))), {
         headers: { 'Content-Type': mime, 'Content-Security-Policy': csp, 'X-Content-Type-Options': 'nosniff' },
       });
     } catch { return new Response('Application files unavailable. Rebuild BlastCast.', { status: 500 }); }
   });
-  const validMedia = (contents, permission, details) => mediaPermission(contents, window?.webContents, permission, details, mediaAllowed && activated());
-  local.setPermissionRequestHandler((contents, permission, callback, details) => callback(
-    (activated() && permission === 'display-capture' && contents === window?.webContents && contents.getURL() === STUDIO_URL && details.isMainFrame !== false) ||
-    (validMedia(contents, permission, details) && details.mediaTypes?.every(type => type === 'audio' || type === 'video') === true),
-  ));
-  local.setPermissionCheckHandler((contents, permission, origin, details) =>
-    (activated() && permission === 'display-capture' && contents === window?.webContents && contents.getURL() === STUDIO_URL && details.isMainFrame !== false && origin === 'app://studio') || validMedia(contents, permission, { ...details, requestingOrigin: origin }));
-  installDisplayPicker({session:local,getWindow:()=>window,BrowserWindow,desktopCapturer,icon:path.join(__dirname,'../assets/brand/Blastworks-Cast-256.png'),authorized:activated});
+  // ClaudeBWAI — host screen share must not depend on camera/mic consent, and desktop getUserMedia must stay closed (boundary.cjs).
+  // ClaudeBWAI — a desktop grant the display-media handler did not serve was spent elsewhere: crash the studio renderer,
+  // which ends that capture; the render-process-gone recovery below reopens the studio.
+  const displayPermission = createDisplayPermission({ getContents: () => window?.webContents, authorized: activated, deviceAllowed: () => mediaAllowed && activated(),
+    onUnconsumed: contents => { if (contents && !contents.isDestroyed()) contents.forcefullyCrashRenderer(); } });
+  app.on('web-contents-created', (_event, contents) => { if (contents.session === local) displayPermission.watch(contents); });
+  local.setPermissionRequestHandler((contents, permission, callback, details) => displayPermission.decide(contents, permission, callback, details));
+  local.setPermissionCheckHandler((contents, permission, origin, details) => displayPermission.check(contents, permission, origin, details));
+  const displayPicker = installDisplayPicker({session:local,getWindow:()=>window,BrowserWindow,desktopCapturer,icon:path.join(__dirname,'../assets/brand/Blastworks-Cast-256.png'),authorized:activated,serve:displayPermission.serve});
+  // ClaudeBWAI — Share screen opens the picker through this call first; getDisplayMedia only collects the armed pick.
+  registerBridge(ipcMain, () => window?.webContents, { chooseScreen: createChooseScreen({ permission: displayPermission, picker: displayPicker, getContents: () => window?.webContents,
+    screenBlocked: () => screenBlockedMessage({ platform: process.platform, getStatus: kind => systemPreferences.getMediaAccessStatus(kind) }) }) }, activated);
   let guests;
   const directAccess = createDirectAccess({
     journalPath: path.join(app.getPath('userData'), 'direct-access-lease.json'),
@@ -120,6 +128,19 @@ app.whenReady().then(async () => {
   const library = createRecordingLibrary({file:path.join(app.getPath('userData'), 'recording-library.json'),open:file=>shell.openPath(file)});
   const preferences = createStudioPreferences({directory:app.getPath('userData')});
   const recording = createRecordingStore({ folder: destination.selectedFolder, open: file => shell.openPath(file), onFinalized:entry=>library.add(entry) });
+  // ClaudeBWAI — session diagnostics log beside the recording: machine facts once, process metrics per sample. No names, no addresses.
+  const gpuDevices = async () => {
+    try {
+      const gpu = await Promise.race([app.getGPUInfo('basic'), new Promise(resolve => setTimeout(() => resolve(null), 2000))]);
+      return Array.isArray(gpu?.gpuDevice) ? gpu.gpuDevice.slice(0, 4).map(({ vendorId, deviceId, active, driverVendor, driverVersion }) => ({ vendorId, deviceId, active, driverVendor, driverVersion })) : null;
+    } catch { return null; }
+  };
+  const sessionDiagnostics = createSessionDiagnostics({ current: recording.current, metrics: () => app.getAppMetrics(), info: async () => {
+    const cpus = os.cpus();
+    // package.json, not app.getVersion(): run as `electron <script>` the latter reports Electron's own version.
+    return { app: require('../package.json').version, electron: process.versions.electron, chrome: process.versions.chrome, os: process.platform, osRelease: os.release(), arch: process.arch,
+      cpuModel: cpus[0]?.model?.trim() ?? null, cpuCores: cpus.length, memoryMiB: Math.round(os.totalmem() / 1048576), gpuFeatures: app.getGPUFeatureStatus(), gpuDevices: await gpuDevices() };
+  } });
   for (const [name, method, count] of [['renameRecording',library.rename,2], ['openLibraryRecording',library.open,1], ['saveDevicePreferences',preferences.saveDevices,1], ['chooseSceneBackdrop', async id => {
       if(!['1cam','2cam','3cam','4cam','5cam','6cam','7cam','8cam','screensharevert-8','screensharehorizont-8'].includes(id)) return {ok:false,message:'Unknown scene.'};
       const chosen=await dialog.showOpenDialog(window,{title:'Choose a 1920 × 1080 PNG backdrop',properties:['openFile'],filters:[{name:'PNG backdrop',extensions:['png']}]});
@@ -132,7 +153,14 @@ app.whenReady().then(async () => {
         if(image.isEmpty()||size.width!==1920||size.height!==1080)return {ok:false,message:'This PNG could not be decoded as a 1920 × 1080 backdrop.'};
         return preferences.saveBackdrop(id,bytes);
       }catch{return {ok:false,message:'The backdrop could not be read. Choose a valid PNG.'};}
-    },1], ['resetSceneBackdrop',preferences.resetBackdrop,1]]) {
+    },1], ['resetSceneBackdrop',preferences.resetBackdrop,1], ['openPrivacySettings', async kind => {
+      // ClaudeBWAI — System Settings deep link, macOS only; kind is allow-listed.
+      const url = privacyUrl(kind);
+      if (!url) return {ok:false,message:'Choose camera or microphone.'};
+      if (process.platform !== 'darwin') return {ok:false,message:'System Settings is only available on macOS.'};
+      try { await shell.openExternal(url); return {ok:true}; }
+      catch { return {ok:false,message:'System Settings could not open. Open Privacy & Security and allow BlastCast yourself.'}; }
+    },1]]) {
     ipcMain.handle(`blastcast:${name}`, (event,...args)=>{
       if(!trustedFrame(event,window?.webContents)||args.length!==count) throw new Error('Unauthorized studio request');
       if(!activated()) throw new Error('BlastCast activation is required.');
@@ -189,9 +217,14 @@ app.whenReady().then(async () => {
     if (!activated()) throw new Error('BlastCast activation is required.');
     return guestWizard.save(args[0]);
   });
-  registerRecordingBridge(ipcMain, () => window?.webContents, { ...recording, finish: coordinator.finish, abort: coordinator.abort }, activated);
+  registerRecordingBridge(ipcMain, () => window?.webContents, { ...recording, finish: coordinator.finish, abort: coordinator.abort, diagnostics: sessionDiagnostics.record }, activated);
   registerSourceBridge(ipcMain, () => window?.webContents, sources, activated);
-  registerGuestBridge(ipcMain, () => window?.webContents, { ...guests, configure: configureGuestAccess }, activated);
+  registerGuestBridge(ipcMain, () => window?.webContents, { ...guests, configure: configureGuestAccess, copyInvite: id => {
+    const current = guests.status();
+    const found = current.ok ? current.invites.find(i => i.id === id) : null;
+    if (!found) return { ok: false, message: 'That invitation is no longer open.' };
+    clipboard.writeText(found.url); return { ok: true };
+  } }, activated);
   ipcMain.handle('blastcast:startFreeGuestAccess', (event,...args) => {
     if (!trustedFrame(event,window?.webContents) || args.length !== 1) throw new Error('Unauthorized guest setup');
     if (!activated()) throw new Error('BlastCast activation is required.');
@@ -206,11 +239,20 @@ app.whenReady().then(async () => {
     try { return await method(); }
     finally { folderOperation = false; }
   };
+  // ClaudeBWAI — a damaged earlier recording is noted once per launch; recording stays allowed.
+  const shownNotices = new Set();
+  const freshNotice = recovered => {
+    const fresh = (recovered.notices || []).filter(n => !shownNotices.has(n));
+    for (const n of fresh) shownNotices.add(n);
+    return fresh.join(' ');
+  };
   const recoverFolder = method => async () => {
     const result = await method();
     if (result.status !== 'ready') return result;
     const recovered = await sourceStore.recover();
-    return recovered.ok ? result : { status:'error', message:recovered.message };
+    if (!recovered.ok) return { status:'error', message:recovered.message };
+    const notice = freshNotice(recovered);
+    return notice ? { ...result, notice } : result;
   };
   const importGuestRecovery = async () => {
     if (folderOperation) return { ok:false,message:'Another recording-folder action is still open.' };
@@ -258,10 +300,31 @@ app.whenReady().then(async () => {
       if (!check) return { ok: false, message: 'Start a current outside-network check first.' };
       clipboard.writeText(check.url); return { ok: true };
     },
-    copyGuestInvite: () => {
+    // ClaudeBWAI — every open invitation, newline-separated, for "Copy all".
+    copyAllGuestInvites: () => {
       const current = guests.status();
-      if (!current.invite) return { ok: false, message: 'Create a current invitation first.' };
-      clipboard.writeText(current.invite.url); return { ok: true };
+      if (!current.ok || !current.invites.length) return { ok: false, message: 'Create an invitation first.' };
+      clipboard.writeText(current.invites.map(i => i.url).join('\n')); return { ok: true };
+    },
+  }, activated);
+  // ClaudeBWAI — media status and host camera background; all gated on activation like other studio handlers.
+  registerBridge(ipcMain, () => window?.webContents, {
+    getMediaAccessStatus: async () => statusOf({ platform: process.platform, getStatus: kind => systemPreferences.getMediaAccessStatus(kind) }),
+    loadBackgroundImage: preferences.loadBackgroundImage,
+    clearBackgroundImage: preferences.clearBackgroundImage,
+    chooseBackgroundImage: async () => {
+      const chosen = await dialog.showOpenDialog(window, { title: 'Choose a camera background image', properties: ['openFile'], filters: [{ name: 'PNG or JPEG image', extensions: ['png', 'jpg', 'jpeg'] }] });
+      if (chosen.canceled || chosen.filePaths.length !== 1) return { ok: false, message: 'No image chosen.', cancelled: true };
+      let bytes;
+      try {
+        const handle = await fs.open(chosen.filePaths[0], 'r');
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || info.size > MAX_BACKGROUND_BYTES) return { ok: false, message: 'Choose a PNG or JPEG no larger than 15 MB.' };
+          bytes = await handle.readFile();
+        } finally { await handle.close(); }
+      } catch { return { ok: false, message: 'The image could not be read. Choose a valid PNG or JPEG.' }; }
+      return preferences.saveBackgroundImage(bytes);
     },
   }, activated);
   registerBridge(ipcMain, () => window?.webContents, { licenseStatus: licenseStore.status });
@@ -301,12 +364,23 @@ app.whenReady().then(async () => {
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', (event,url) => { if (!allowedStudioNavigation(url)) event.preventDefault(); });
     window.webContents.on('will-attach-webview', event => event.preventDefault());
+    let quitting = false, closeDialogOpen = false;
     window.on('close', event => {
-      if (coordinator.busy()) {
-        event.preventDefault();
-        void dialog.showMessageBox(window, { type: 'info', message: 'Stop recording, then keep the studio open until all originals are verified. An override becomes available only after more than an hour has passed since production finished.', buttons: ['Keep recording window open'] });
-      }
+      if (quitting || !coordinator.busy()) return;
+      event.preventDefault();
+      if (closeDialogOpen) return;
+      closeDialogOpen = true;
+      void (async () => {
+        const dialogText = closeDialogFor(coordinator.closeAdvice());
+        const answer = await dialog.showMessageBox(window, { type: 'info', ...dialogText, defaultId: 0, cancelId: 0 });
+        if (answer.response !== 1) return;
+        const closed = await coordinator.closeForQuit();
+        if (closed.ok && !window?.isDestroyed()) { quitting = true; window.close(); }
+        else if (!closed.ok) await dialog.showMessageBox(window, { type: 'warning', message: closed.message ?? 'The originals could not be closed. Files are kept.', buttons: ['Keep BlastCast open'] });
+      })().finally(() => { closeDialogOpen = false; });
     });
+    // A close the host confirmed above must not be undone by the renderer's beforeunload, whose originals flag lags by one poll.
+    window.webContents.on('will-prevent-unload', event => { if (quitting) event.preventDefault(); });
     const created = window;
     let recovering = false;
     created.webContents.on('render-process-gone', () => {
@@ -319,12 +393,14 @@ app.whenReady().then(async () => {
         if (!interrupted.ok) throw new Error(interrupted.message);
         sourceStore = createSourceStore({ folder: destination.selectedFolder });
         const recovered = destination.selectedFolder() ? await sourceStore.recover() : { ok:true, recovered:false };
+        const notice = recovered.ok ? freshNotice(recovered) : '';
         if (created.isDestroyed()) return;
         const answer = await dialog.showMessageBox(created, {
           type: 'warning', title: 'Studio interrupted',
           message: 'BlastCast’s studio stopped unexpectedly.',
           detail: recovered.ok
             ? 'BlastCast checked the selected recording folder and kept every verified original byte it found. Incomplete tails remain unchanged. Reopening the studio leaves your camera and microphone off until you start preview again.'
+              + (notice ? ` ${notice}` : '')
             : `${recovered.message} Reopening the studio keeps recording blocked until you select another valid folder.`,
           buttons: ['Reopen studio', 'Keep window open'], defaultId: 0, cancelId: 1,
         });

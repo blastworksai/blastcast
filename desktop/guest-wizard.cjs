@@ -32,7 +32,9 @@ function createGuestWizard({ settings, access, guests, busy = () => false }) {
       if (!(current.ok && current.phase === 'ready' && activeRevision === revision)) {
         if (busy()) return { ok: false, message: 'Finish recording and receiving originals before starting a new guest connection.' };
         const result = config.domain === 'no'
-          ? await access.startFree({ port: config.port, helper: config.helper })
+          ? (config.freeRouteAcknowledged === true
+            ? await access.startFree({ port: config.port, helper: config.helper, privacyAcknowledged: true })
+            : { ok: false, message: 'Open Guest settings and confirm the free address privacy notice first.' })
           : await access.configure({ origin: config.origin, port: config.port, routeType: 'tunnel', helper: config.helper });
         if (requestedRevision !== revision) return { ok: false, message: 'Guest setup was cancelled.' };
         if (!result.ok || !['outside-check', 'ready'].includes(result.phase)) return result;

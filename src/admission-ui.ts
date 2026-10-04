@@ -5,6 +5,7 @@
 // Styles: load src/admission.css via <link> in the host HTML.
 // Do NOT inject inline <style> — desktop CSP requires style-src 'self'.
 
+import { ORIGINALS_UNSUPPORTED_HOST_LABEL } from './source-protocol.js';
 /** Guest entry as reported by the host list. */
 export interface GuestEntry {
   id: string;
@@ -12,12 +13,20 @@ export interface GuestEntry {
   alive: boolean;
   revoked: boolean;
   expiresAt: number;
+  /** ClaudeBWAI — presence (guests.cjs), set for admitted guests: is their page still there? Separate from the admission phase. */
+  presence?: 'connected' | 'disconnected';
+  /** ClaudeBWAI — einh 4 Oct (r10): the guest's page announced it was closing (pagehide); the host skips call recovery for it. */
+  pageGone?: boolean;
+  /** ClaudeBWAI — the guest's browser cannot record an original (self-reported): the host records them from the call. */
+  originalsUnsupported?: boolean;
   session?: {
     id: string;
     name: string;
     consentedAt: number | null;
     consentVersion: string | null;
     requestedAt: number | null;
+    /** ClaudeBWAI — 'phone' when the guest's page said so at join; desktops send nothing. */
+    device?: 'phone' | null;
     decision: 'admitted' | 'rejected' | null;
     decidedAt: number | null;
     removedAt: number | null;
@@ -37,6 +46,29 @@ export interface AdmissionCallbacks {
   onReject(sessionId: string): Promise<ActionResult>;
   onRemove(sessionId: string): Promise<ActionResult>;
   onRevoke(inviteId: string): Promise<ActionResult>;
+}
+
+/** ClaudeBWAI — the row's state text: an admitted guest whose page has gone says so (einh, 3 Oct: "Disconnected, can rejoin"). */
+export function admissionRowLabel(guest: Pick<GuestEntry, 'phase' | 'presence' | 'originalsUnsupported' | 'pageGone'> & { session?: { id: string } }): string {
+  // einh 4 Oct (r10): while the call is recovering its media (30 s) Reconnecting wins over a presence lapse: a dropped network silences the
+  // page and the media together. Only a call lost for good (lostSessions) or one that is not recovering says Disconnected.
+  if (guest.phase === 'admitted' && guest.session && lostSessions.has(guest.session.id)) return 'Disconnected — can rejoin from the same browser';
+  if (guest.phase === 'admitted' && guest.session && reconnectingSessions.has(guest.session.id) && !guest.pageGone) return 'Reconnecting…'; // a page that said it was closing is not a network drop
+  if (guest.phase === 'admitted' && guest.presence === 'disconnected') return 'Disconnected — can rejoin from the same browser';
+  if (guest.phase === 'admitted' && guest.originalsUnsupported === true) return `${guest.phase} — ${ORIGINALS_UNSUPPORTED_HOST_LABEL}`;
+  return guest.phase;
+}
+
+/** ClaudeBWAI — sessions whose call media is recovering (set by HostCalls, read when the row renders; the panel refreshes on its poll). */
+const reconnectingSessions = new Set<string>();
+export function setGuestReconnecting(sessionId: string, reconnecting: boolean): void {
+  if (reconnecting) reconnectingSessions.add(sessionId); else reconnectingSessions.delete(sessionId);
+}
+
+/** ClaudeBWAI — einh 4 Oct: sessions whose call media is gone for good (recovery failed or the call ended) while the guest's page may still poll. Cleared when a new call connects. */
+const lostSessions = new Set<string>();
+export function setGuestMediaLost(sessionId: string, lost: boolean): void {
+  if (lost) { lostSessions.add(sessionId); reconnectingSessions.delete(sessionId); } else lostSessions.delete(sessionId);
 }
 
 // ── Adapter ──────────────────────────────────────────────────────
@@ -61,6 +93,10 @@ export function createAdmissionPanel(
   const heading = document.createElement('h3');
   heading.textContent = 'Guest Admission';
   root.appendChild(heading);
+
+  // ClaudeBWAI — rows the host cleared with the red ×; renderer-side for the 2 Oct demo build.
+  const dismissed = new Set<string>();
+  let lastGuests: readonly GuestEntry[] = [];
 
   const list = document.createElement('ul');
   list.className = 'bcast-admission-list';
@@ -149,7 +185,10 @@ export function createAdmissionPanel(
     const phaseSpan = document.createElement('span');
     phaseSpan.className = 'bcast-admission-phase';
     phaseSpan.dataset['phase'] = guest.phase;
-    phaseSpan.textContent = guest.phase;
+    phaseSpan.textContent = admissionRowLabel(guest);
+    if (guest.presence) li.dataset['presence'] = guest.presence;
+    if (guest.phase === 'admitted' && guest.presence !== 'disconnected' && guest.session && lostSessions.has(guest.session.id)) li.dataset['media'] = 'lost';
+    else if (guest.phase === 'admitted' && !guest.pageGone && guest.session && reconnectingSessions.has(guest.session.id)) li.dataset['media'] = 'reconnecting';
     li.appendChild(phaseSpan);
 
     const actions = document.createElement('span');
@@ -174,11 +213,24 @@ export function createAdmissionPanel(
       actions.appendChild(makeButton('Revoke', 'bcast-admission-btn--revoke', guestKey, () => callbacks.onRevoke(guest.id)));
     }
 
+    if (inactive) {
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button';
+      dismiss.className = 'bcast-admission-btn bcast-admission-btn--dismiss';
+      dismiss.textContent = '×';
+      dismiss.title = 'Remove this row';
+      dismiss.setAttribute('aria-label', `Remove ${guest.session?.name ?? 'invitation'} row`);
+      dismiss.addEventListener('click', () => { dismissed.add(guest.id); update(lastGuests); });
+      actions.appendChild(dismiss);
+    }
+
     li.appendChild(actions);
     return li;
   }
 
   function update(guests: readonly GuestEntry[]): void {
+    lastGuests = guests;
+    guests = guests.filter(guest => !dismissed.has(guest.id));
     // Preserve focus: record which guest-id button had focus.
     const focused = document.activeElement;
     let focusGuestId: string | null = null;

@@ -8,6 +8,7 @@ type Options = {
   live: () => boolean;
   busy: (value: boolean) => void;
   message: (value: string, error?: boolean) => void;
+  denied?: () => void; // ClaudeBWAI — studio explains a denial (macOS status + Open System Settings)
 };
 export class DeviceAccess {
   private flight: Promise<void> | null = null;
@@ -38,7 +39,7 @@ export class DeviceAccess {
       this.options.message('Allow camera and microphone access to list devices. Preview stays off.');
       try {
         if (!await this.options.authorize()) {
-          if (generation === this.generation) this.options.message('Access was not granted. Open a device list to try again.', true);
+          if (generation === this.generation) { if (this.options.denied) this.options.denied(); else this.options.message('Access was not granted. Open a device list to try again.', true); }
           return;
         }
         if (generation !== this.generation || !this.options.canRequest()) return;

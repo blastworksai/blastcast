@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createGuestWizard} from '../desktop/guest-wizard.cjs';
 function fixture(){
- let config={domain:'no',origin:'',port:43821,helper:{}},state={ok:true,phase:'off'},recording=false,starts=0,invites=0;
+ let config={domain:'no',freeRouteAcknowledged:true,origin:'',port:43821,helper:{}},state={ok:true,phase:'off'},recording=false,starts=0,invites=0;
  const settings={load:async()=>({ok:true,settings:config}),configuration:async()=>config,save:async c=>{config=c;return{ok:true,settings:c};},clear:async()=>{config=null;return{ok:true,settings:null};}};
  const access={status:()=>state,startFree:async()=>{starts++;return state={ok:true,phase:'outside-check'};},configure:async()=>{starts++;return state={ok:true,phase:'outside-check'};},stop:async()=>state={ok:true,phase:'off'}};
  const guests={enableSavedInvites:()=>state={ok:true,phase:'ready'},invite:()=>({...state,invite:{url:`https://example.test/#${++invites}`}})};

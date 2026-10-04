@@ -1,21 +1,21 @@
 // CodexBWAI — explicit, streamed guest recovery; the host remains the verifier.
 import type { LocalSourceRecord, SourceQueueSnapshot } from './source-outbox.js';
+import { SOURCE_PIECE_BYTES, SOURCE_RETAINED_BYTES, SOURCE_MAX_BYTES, SOURCE_MAX_CHUNKS, SOURCE_CHUNK_KEYS, UUID } from './source-limits.js';
 import type { SourceChunk, SourceDescriptor, SourceEnd } from './source-protocol.js';
 
 export const RECOVERY_MAGIC = new TextEncoder().encode('BLASTCASTRECOV1\n');
 export const RECOVERY_EXTENSION = '.bcr';
 const MAX_MANIFEST = 1024 * 1024;
 const MAX_FRAME_META = 1024;
-const MAX_PIECE = 64 * 1024;
-const MAX_RETAINED = 2 * 1024 * 1024 * 1024;
-const MAX_SOURCE_BYTES = 16 * 1024 ** 3;
-const MAX_CHUNKS = 100000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_PIECE = SOURCE_PIECE_BYTES;
+const MAX_RETAINED = SOURCE_RETAINED_BYTES;
+const MAX_SOURCE_BYTES = SOURCE_MAX_BYTES;
+const MAX_CHUNKS = SOURCE_MAX_CHUNKS;
 const PARTICIPANT = /^[A-Za-z0-9_-]{22}$/;
 const KEY = /^[A-Za-z0-9_-]{43}$/;
 const DESCRIPTOR = ['episodeId','epochId','mimeType','startedMonoMs','hostStartedMs','clockUncertaintyMs','width','height'];
 const END = ['episodeId','epochId','chunkCount','endedMonoMs'];
-const CHUNK = ['episodeId','epochId','sequence','byteLength','sha256','startMonoMs','endMonoMs'];
+const CHUNK = SOURCE_CHUNK_KEYS;
 
 export type SourceRecoveryIdentity = { participantId: string; recoveryKey: string; episodeId: string };
 type RecoveryEpoch = { descriptor: SourceDescriptor; acked: number; next: number; ackedBytes: number; bytes: number;
@@ -41,7 +41,7 @@ function invalid(message = 'Saved recovery data is invalid.'): never { throw new
 function descriptor(value: unknown, identity: SourceRecoveryIdentity): asserts value is SourceDescriptor {
   if (!exact(value,DESCRIPTOR) || value.episodeId !== identity.episodeId || typeof value.epochId !== 'string' || !UUID.test(value.epochId) ||
     value.mimeType !== 'video/webm;codecs=vp8,opus' || !time(value.startedMonoMs) || !time(value.hostStartedMs) ||
-    !time(value.clockUncertaintyMs) || !integer(value.width,0,3840) || !integer(value.height,0,2160)) invalid();
+    !time(value.clockUncertaintyMs) || !integer(value.width,0,3840) || !integer(value.height,0,3840) || Math.min(value.width,value.height) > 2160) invalid();
 }
 function ending(value: unknown, d: SourceDescriptor, next: number): asserts value is SourceEnd | null {
   if (value === null) return;

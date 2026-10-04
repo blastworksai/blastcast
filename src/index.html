@@ -2,7 +2,7 @@
 <!-- CodexBWAI — implementation of einh's supplied BlastCast redesign. -->
 <html lang="en" data-theme="dark">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BlastCast · Your studio</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="blastcast.css"><link rel="stylesheet" href="admission.css"><link rel="stylesheet" href="studio.css"><script type="module" src="studio.js"></script></head>
+<title>BlastCast · Your studio</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="blastcast.css"><link rel="stylesheet" href="admission.css"><link rel="stylesheet" href="studio.css"><script src="bodypix/tf.min.js"></script><script src="bodypix/body-pix.min.js"></script><script type="module" src="studio.js"></script></head>
 <body><div id="activation-lock" class="activation-lock" hidden><div><img src="logo-icon.svg" alt=""><h1>Activate BlastCast</h1><p>Enter a valid activation key in Settings to use the studio.</p><button id="open-activation" class="primary">Open activation settings</button></div></div><div id="studio" class="bc-studio">
 <header class="bc-topbar"><img class="bc-topbar__logo" src="logo-icon.svg" alt=""><h1 class="bc-topbar__name">BlastCast</h1><div class="bc-grow"></div><span id="shell-status" class="bc-status" role="status">Devices off</span><span id="recording-live" class="recording-live" hidden>● LIVE</span><button id="open-settings" class="secondary" aria-haspopup="dialog">Settings</button></header>
 <div class="bc-studio__body">
@@ -20,7 +20,7 @@
 <div class="screen-controls"><button id="share-screen" class="secondary">Share screen</button><label for="screen-source">Screen in scene</label><select id="screen-source" aria-describedby="screen-status"><option value="none">No screen</option></select></div><p id="screen-share-prompt" class="small screen-share-prompt" role="status" hidden>A guest is sharing a screen. Choose a screen to place it in the scene.</p><p id="screen-status" class="small status" role="status">Screen sharing is off.</p>
 <p id="scene-status" class="status" role="status" aria-live="polite">Loading scene…</p>
 <div class="preview-controls" hidden><button id="start-preview" class="secondary">Start preview <span aria-hidden="true">↗</span></button><button id="stop-preview" class="secondary" disabled>Stop preview</button><span id="capture-note" class="privacy-note">Preview only · Not recording</span></div>
-<p id="preview-status" class="status" role="status">Your camera and microphone are off.</p>
+<p id="preview-status" class="status" role="status">Your camera and microphone are off.</p><button id="open-privacy-settings" class="secondary" type="button" hidden>Open System Settings</button><div id="device-notices" class="device-notices" aria-live="polite" hidden></div>
 </main>
 <aside class="bc-panel" aria-label="Session">
 <div class="bc-tabs" role="tablist" aria-label="Session panels"><button id="guests-tab" class="bc-tab" role="tab" aria-selected="true" aria-controls="guests-pane">Guests <span id="guest-count" class="bc-tab__count">0</span></button><button id="recordings-tab" class="bc-tab" role="tab" aria-selected="false" aria-controls="recordings-pane" tabindex="-1">Recordings <span id="recording-count" class="bc-tab__count">0</span></button></div>
@@ -53,10 +53,11 @@
 <div id="shell-errors" class="shell-errors" role="alert" hidden></div>
 <footer class="bc-bottombar">
 <section class="device-controls" aria-labelledby="devices-heading"><h2 id="devices-heading" class="sr-only">Camera and microphone</h2>
-<div class="device-field"><label for="microphone">Microphone</label><div class="device-row"><button id="mute-microphone" class="secondary" aria-label="Enable microphone" aria-pressed="true">Mic off</button><select id="microphone"><option value="">System default microphone</option></select></div><div class="meter-row"><meter id="mic-level" min="0" max="100" value="0" aria-label="Microphone input level"></meter><span id="mic-label">Mic off</span></div></div>
-<div class="device-field"><label for="camera">Camera</label><div class="device-row"><button id="toggle-camera" class="secondary" aria-label="Enable camera" aria-pressed="true">Camera off</button><select id="camera"><option value="">System default camera</option></select></div></div>
+<div class="device-field"><label for="microphone">Microphone</label><div class="device-row"><button id="mute-microphone" class="secondary" aria-label="Mute microphone" aria-pressed="true">Mic off</button><select id="microphone"><option value="">System default microphone</option></select></div><div class="meter-row"><meter id="mic-level" min="0" max="100" value="0" aria-label="Microphone input level"></meter><span id="mic-label">Mic off</span></div></div>
+<div class="device-field"><label for="camera">Camera</label><div class="device-row"><button id="toggle-camera" class="secondary" aria-label="Turn off camera" aria-pressed="true">Camera off</button><select id="camera"><option value="">System default camera</option></select></div></div>
+<div class="device-field"><label for="camera-background">Background</label><div class="device-row"><select id="camera-background" aria-label="Camera background"><option value="off">Background off</option><option value="blur">Blur background</option><option value="image">Background image</option></select><button id="camera-background-change" class="secondary" type="button" hidden>Change image</button><input id="camera-background-file" type="file" accept="image/png,image/jpeg" hidden></div><p id="camera-background-status" class="small status sr-only" role="status">Camera background is off.</p></div>
 </section>
-<div class="record-controls"><span id="recording-clock" class="bc-meta" aria-label="Recording elapsed time">00:00:00</span><span id="record-trigger" class="record-trigger" role="group" aria-label="Record" tabindex="0" title="Choose a recording folder before recording." aria-describedby="record-disabled-reason"><button id="record" class="primary" disabled>● Record</button><span id="record-disabled-reason" class="sr-only">Choose a recording folder before recording.</span></span><button id="stop-recording" class="secondary" disabled>Stop recording</button></div>
+<div class="record-controls"><span id="recording-clock" class="bc-meta" aria-label="Recording elapsed time">00:00:00</span><span id="record-trigger" class="record-trigger" role="group" aria-label="Record" tabindex="0" title="Choose a recording folder before recording." aria-describedby="record-disabled-reason"><button id="record" class="primary" disabled>● Record</button><span id="record-disabled-reason" class="record-reason">Choose a recording folder before recording.</span></span><button id="stop-recording" class="secondary" disabled>Stop recording</button></div>
 <div class="folder-summary"><div id="folder-label" class="folder-label">No folder selected</div><button id="choose-folder" class="secondary">Choose folder</button></div>
 <p id="device-status" class="small status" role="status">Choose camera or microphone to allow access and list devices.</p>
 </footer>
@@ -77,10 +78,11 @@
 <dialog id="guest-connection" aria-labelledby="guest-heading"><div class="settings-heading"><h2 id="guest-heading">Guest invitations</h2><button id="close-guest-connection" class="secondary">Close</button></div>
     <section id="guest-panel" class="guest-panel" hidden>
       <p id="guest-settings-summary" class="small">Loading guest settings…</p>
-      <div class="preview-controls"><button id="create-guest-invite" class="primary" disabled>Generate invite link</button><button id="edit-guest-settings" class="secondary" disabled>Edit guest settings</button><button id="forget-guest-settings" class="text-button" hidden>Forget saved settings</button></div>
+      <div class="preview-controls"><label class="small" for="guest-invite-count">Guests</label><select id="guest-invite-count" aria-label="Number of guests to invite" disabled><option value="1">1</option></select><button id="create-guest-invite" class="primary" disabled>Generate invite link</button><button id="edit-guest-settings" class="secondary" disabled>Edit guest settings</button><button id="forget-guest-settings" class="text-button" hidden>Forget saved settings</button></div>
       <div id="guest-forget-confirm" hidden><p>Forget the saved guest address and relay credentials on this computer? This does not delete your provider accounts.</p><button id="confirm-forget-guest-settings" class="secondary">Forget settings</button><button id="cancel-forget-guest-settings" class="secondary">Keep settings</button></div>
-      <div class="preview-controls"><button id="copy-guest-invite" class="secondary" disabled>Copy link</button><button id="revoke-guest-invites" class="secondary" disabled>Close invitations</button><button id="stop-guests" class="secondary" disabled>Turn guest access off</button></div>
-      <label>Invitation<input id="guest-invite" readonly autocomplete="off" aria-label="Latest guest invitation"></label>
+      <div class="preview-controls"><button id="copy-all-guest-invites" class="secondary" disabled hidden>Copy all</button><button id="revoke-guest-invites" class="secondary" disabled>Close invitations</button><button id="stop-guests" class="secondary" disabled>Turn guest access off</button></div>
+      <input id="guest-invite" type="hidden" aria-hidden="true">
+      <ul id="guest-invite-list" class="guest-invite-list" aria-label="Open guest invitations"></ul>
       <p id="guest-invite-status" class="small status" role="status">Set up once, then generate a link whenever you need one.</p>
       <section id="guest-wizard" hidden aria-labelledby="guest-wizard-heading">
         <h3 id="guest-wizard-heading">Guest setup · <span id="guest-wizard-step-label">1 of 3</span></h3>
@@ -93,6 +95,7 @@
           <figure id="cloudflare-route-form-figure" class="instruction-figure"><img src="instructions/cloudflare-route-form.png" alt="Cloudflare Add published application form with guests.example.com, an empty path, and Service URL http://127.0.0.1:43821."><figcaption>For step 3, open <strong>Routes</strong>, click <strong>Add route</strong>, choose <strong>Published application</strong>, and enter <strong>http://127.0.0.1:43821</strong> as the Service URL.</figcaption></figure>
           <figure id="cloudflare-route-ready-figure" class="instruction-figure"><img src="instructions/cloudflare-route-ready.png" alt="Completed Cloudflare Published application route pointing guests.example.com to http://127.0.0.1:43821."><figcaption>Done: the route table shows <strong>Published application</strong> and <strong>http://127.0.0.1:43821</strong>.</figcaption></figure>
           <p id="helper-domain-note" class="small">Keep Cloudflare account passwords and tunnel tokens outside BlastCast.</p>
+          <p id="cloudflare-privacy-note" class="small field-help">Cloudflare carries this traffic and can see it, under its privacy terms.</p>
           <label id="wizard-guest-origin-label">Your HTTPS guest address<input id="guest-origin" type="url" placeholder="https://guests.example.com" autocomplete="off"></label>
           <p id="helper-recovery" class="small"></p>
         </section>
@@ -103,8 +106,13 @@
           <label>Allocation username<input id="relay-username" autocomplete="off" maxlength="128"></label>
           <label>Allocation password<input id="relay-password" type="password" autocomplete="off" maxlength="512"></label><p id="relay-saved-note" class="small" hidden>Password saved. Leave blank to keep it.</p>
           <label><input id="relay-free" type="checkbox"> My Free account requires no payment details or automatic upgrade.</label>
-          <details><summary>How relay credentials are used</summary><p class="small">Saved on this computer and shared only with admitted guests. Rotate them in ExpressTURN after a session; guests can retain them until then. Remaining free allowance is not measured.</p><label><input id="relay-only" type="checkbox"> Force relay for troubleshooting</label></details>
+          <p id="relay-guest-notice" class="small notice">Admitted guests receive these relay details for the call and could keep using your ExpressTURN allowance afterwards. Change the password in ExpressTURN if that matters to you.</p>
+          <details><summary>How relay credentials are used</summary><p class="small">Saved on this computer and shared only with admitted guests. Remaining free allowance is not measured.</p><label><input id="relay-only" type="checkbox"> Force relay for troubleshooting</label></details>
         </section>
+        <div id="free-privacy" class="privacy-warning" hidden>
+          <p class="small"><strong>Privacy:</strong> localhost.run, the free address service, can see guest names, invite links and guests' recordings while they upload. The live call's audio and video stay encrypted end to end. For private recordings, use your own domain with Cloudflare (Cloudflare can see the same traffic, under its own privacy terms).</p>
+          <label><input id="free-privacy-ack" type="checkbox"> I understand. Use the free address anyway.</label>
+        </div>
         <p id="guest-wizard-status" class="status" role="status"></p>
         <div class="preview-controls"><button id="guest-wizard-back" class="secondary" hidden>Back</button><button id="guest-wizard-next" class="primary">Continue</button><button id="save-guest-settings" class="primary" hidden>Save &amp; generate</button><button id="guest-wizard-cancel" class="secondary">Cancel</button></div>
       </section>

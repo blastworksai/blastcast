@@ -14,8 +14,18 @@ function parseOrigin(line) {
   return match[2];
 }
 
+// ClaudeBWAI — required pinned localhost.run host key, shipped with the app (never fetched at run time).
+const SHIPPED_KNOWN_HOSTS = path.join(__dirname, '..', 'assets', 'localhost-run-known-hosts.txt');
+async function pinnedHostsFile(file) {
+  try {
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size > 16384) return null;
+    return (await fs.readFile(file, 'utf8')).trim() ? file : null;
+  } catch { return null; }
+}
+
 function createFreeTunnel({ directory, spawn = spawnChild, platform = process.platform, onLost = () => {},
-  startupTimeoutMs = START_TIMEOUT_MS, stopTimeoutMs = STOP_TIMEOUT_MS } = {}) {
+  shippedKnownHosts = SHIPPED_KNOWN_HOSTS, startupTimeoutMs = START_TIMEOUT_MS, stopTimeoutMs = STOP_TIMEOUT_MS } = {}) {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || /[\x00-\x1f\x7f%]/.test(directory) || directory.includes('${')) throw new Error('A private absolute tunnel directory is required.');
   let active = null, generation = 0;
   let current = { phase: 'off', message: 'Guest tunnel is off.', origin: null };
@@ -44,7 +54,9 @@ function createFreeTunnel({ directory, spawn = spawnChild, platform = process.pl
     settle(run, { ok: false, message }); kill(run);
     if (wasReady) notifyLost();
   }
-  async function start(port) {
+  async function start(port, options) {
+    // The host must have acknowledged that localhost.run terminates TLS; the renderer cannot skip this.
+    if (options?.privacyAcknowledged !== true) return { ok: false, message: 'Confirm the free address privacy notice in guest settings before using the free address.' };
     if (!Number.isInteger(port) || port < 1024 || port > 65535) return { ok: false, message: 'Choose a local guest port between 1024 and 65535.' };
     if (active) return { ok: false, message: 'Stop the existing guest tunnel before starting another.' };
     const run = { generation: ++generation, child: null, closed: false, failed: false, buffer: '', bytes: 0 };
@@ -68,11 +80,15 @@ function createFreeTunnel({ directory, spawn = spawnChild, platform = process.pl
       if (active !== run || run.failed || run.closed) { release(run); return result; }
       const executable = platform === 'win32' ? path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : '/usr/bin/ssh';
       if (platform === 'win32' && !path.win32.isAbsolute(executable)) throw new Error('Invalid system SSH path');
-      const knownHosts = hosts.replace(/\\/g, '/').replace(/"/g, '\\"');
+      const pinned = await pinnedHostsFile(shippedKnownHosts);
+      if (active !== run || run.failed || run.closed) { release(run); return result; }
+      // ClaudeBWAI — fail closed: the pinned host key is mandatory, never trust-on-first-use. Nothing is spawned.
+      if (!pinned) { fail(run, 'BlastCast\u2019s localhost.run host key file is missing; reinstall BlastCast.'); release(run); return result; }
+      const knownHosts = pinned.replace(/\\/g, '/').replace(/"/g, '\\"');
       const args = ['-F', config, '-T', '-o', 'BatchMode=yes', '-o', 'IdentityAgent=none', '-o', 'IdentityFile=none',
         '-o', 'IdentitiesOnly=yes', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=no',
         '-o', 'KbdInteractiveAuthentication=no', '-o', 'PreferredAuthentications=none', '-o', 'ForwardAgent=no',
-        '-o', 'StrictHostKeyChecking=accept-new', '-o', `UserKnownHostsFile="${knownHosts}"`, '-o', 'GlobalKnownHostsFile=none',
+        '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile="${knownHosts}"`, '-o', 'GlobalKnownHostsFile=none',
         '-o', 'UpdateHostKeys=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=15',
         '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2', '-R', `80:127.0.0.1:${port}`, 'nokey@localhost.run'];
       const env = { ...process.env }; delete env.SSH_AUTH_SOCK; delete env.SSH_AGENT_PID; delete env.SSH_ASKPASS;

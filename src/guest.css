@@ -32,3 +32,6 @@ meter { width: 100%; height: 14px; }
 .in-call .viewfinder { width: 200px; max-width: 100%; }
 #guest-host { display: block; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 8px; }
 #guest-host-panel[hidden] { display: none; }
+
+.notice { margin: 8px 0; padding: 8px 12px; border: 1px solid #ffab01; border-radius: 8px; }
+.notice[hidden] { display: none; }

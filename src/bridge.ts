@@ -1,6 +1,7 @@
+import type { DiagnosticsPayload } from './session-diagnostics.js';
 import type { SourceDescriptor, SourceChunk, SourceEnd, SourceBeginAck, SourceChunkAck, SourceFinishAck, SourceStatus } from './source-protocol.js';
 export type FolderResult =
-  | { status: 'ready'; label: string }
+  | { status: 'ready'; label: string; notice?: string }
   | { status: 'cancelled' }
   | { status: 'error'; message: string };
 
@@ -23,6 +24,9 @@ type GuestSuccessBase = {
   port: number | null;
   helper: { provider: 'cloudflare' | 'localhost-run'; iceTransportPolicy: RTCIceTransportPolicy; quota: 'unknown' } | null;
   invite: { url: string; expiresAt: number } | null; 
+  /** ClaudeBWAI — every open, unused invitation of this session, oldest first, and how many more the host may create. */
+  invites: { id: string; url: string; expiresAt: number }[];
+  inviteSlots: number;
   guests: any[];
 };
 export type HelperInput = { provider: 'cloudflare' | 'localhost-run'; freeAccountConfirmed: true; relay: { urls: string[]; username: string; credential: string; iceTransportPolicy: RTCIceTransportPolicy } };
@@ -50,15 +54,19 @@ export type DirectAccessStatus =
   | { ok: true; phase: 'active'; plan: DirectPlan; lease: DirectLease; message: string }
   | { ok: false; phase: 'blocked' | 'cleanup-pending'; plan: DirectPlan | null; lease: DirectLease | null; message: string };
 
-export type GuestSettingsInput = {domain:'yes'|'no';origin:string;port:number;helper:HelperInput};
+export type GuestSettingsInput = {domain:'yes'|'no';origin:string;port:number;helper:HelperInput;freeRouteAcknowledged?:boolean};
 export type GuestSettingsResult = {ok:true;settings:(GuestSettingsInput & {credentialSaved:true})|null}|{ok:false;message:string};
 export type LicenseStatus = {active:true;license:{licenseId:string;holder:string;kind:'owner'|'test'|'customer';issuedAt:string};message?:string}|{active:false;message?:string};
+// ClaudeBWAI — contract for the 0.2.3 rebuild: macOS privacy status, host background preferences.
+export type MediaAccessState = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+export type CameraBackgroundPreference = 'off' | 'blur' | 'image';
+export type DevicePreferences = {camera:string;microphone:string;height:1080|2160;background?:CameraBackgroundPreference};
 export interface DesktopBridge {
   loadGuestSettings():Promise<GuestSettingsResult>;
   saveGuestSettings(input:GuestSettingsInput):Promise<GuestSettingsResult>;
   clearGuestSettings():Promise<GuestSettingsResult>;
   generateSavedGuestInvite():Promise<GuestStatus>;
-  startFreeGuestAccess(input:{port:number;helper:HelperInput}):Promise<GuestStatus>;
+  startFreeGuestAccess(input:{port:number;helper:HelperInput;privacyAcknowledged:boolean}):Promise<GuestStatus>;
   appInfo():Promise<{version:string;updates:string}>;
   licenseStatus():Promise<LicenseStatus>;
   activateLicense(key:string):Promise<LicenseStatus>;
@@ -71,8 +79,11 @@ export interface DesktopBridge {
   listRecordings(): Promise<{ok:true;recordings:{id:string;name:string;label:string;createdAt:number;durationMs:number}[]}|{ok:false;message:string}>;
   renameRecording(id:string,label:string):Promise<{ok:boolean;message?:string}>;
   openLibraryRecording(id:string):Promise<{ok:boolean;message?:string}>;
-  loadDevicePreferences():Promise<{ok:boolean;preferences?:{camera:string;microphone:string;height:1080|2160};message?:string}>;
-  saveDevicePreferences(value:{camera:string;microphone:string;height:1080|2160}):Promise<{ok:boolean;message?:string}>;
+  loadDevicePreferences():Promise<{ok:boolean;preferences?:DevicePreferences;message?:string}>;
+  saveDevicePreferences(value:DevicePreferences):Promise<{ok:boolean;message?:string}>;
+  chooseBackgroundImage():Promise<{ok:true;dataUrl:string}|{ok:false;message:string;cancelled?:boolean}>;
+  loadBackgroundImage():Promise<{ok:true;dataUrl:string|null}|{ok:false;message:string}>;
+  clearBackgroundImage():Promise<{ok:boolean;message?:string}>;
   configureGuests(config: { origin: string; port: number; routeType: 'direct' | 'tunnel'; helper?: HelperInput }): Promise<GuestStatus>;
   guestStatus(): Promise<GuestStatus>;
   getGuestCallConfiguration(sessionId: string): Promise<CallConfiguration>;
@@ -82,7 +93,9 @@ export interface DesktopBridge {
   prepareGuestDirectAccess(): Promise<DirectAccessStatus>;
   approveGuestDirectAccess(): Promise<DirectAccessStatus>;
   createGuestInvite(): Promise<GuestStatus>;
-  copyGuestInvite(): Promise<{ ok: boolean; message?: string }>;
+  createGuestInvites(count: number): Promise<GuestStatus>;
+  copyGuestInvite(id: string): Promise<{ ok: boolean; message?: string }>;
+  copyAllGuestInvites(): Promise<{ ok: boolean; message?: string }>;
   revokeGuestInvites(): Promise<GuestStatus>;
   stopGuests(): Promise<GuestStatus>;
   guestAdmit(id: string): Promise<{ ok: boolean; message?: string }>;
@@ -101,8 +114,13 @@ export interface DesktopBridge {
   appendRecording(id: string, sequence: number, bytes: ArrayBuffer): Promise<RecordingResult>;
   finishRecording(id: string): Promise<RecordingResult>;
   abortRecording(id: string): Promise<RecordingResult>;
+  // ClaudeBWAI — one schema-checked diagnostics line for the active recording; main owns the file beside it.
+  recordSessionDiagnostics(id: string, payload: DiagnosticsPayload): Promise<{ ok: boolean }>;
   openRecording(): Promise<RecordingResult>;
   authorizePreview(): Promise<boolean>;
+  chooseScreen(): Promise<{ ok: boolean; cancelled?: boolean; blocked?: boolean; message?: string }>;
+  getMediaAccessStatus():Promise<{camera:MediaAccessState;microphone:MediaAccessState}>;
+  openPrivacySettings(kind:'camera'|'microphone'):Promise<{ok:boolean;message?:string}>;
   chooseFolder(): Promise<FolderResult>;
   checkFolder(): Promise<FolderResult>;
   openFolder(): Promise<{ ok: boolean; message?: string }>;

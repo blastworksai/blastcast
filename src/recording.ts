@@ -2,6 +2,7 @@
 import type { DesktopBridge, RecordingResult } from './bridge.js';
 export const MAX_CHUNK = 8 * 1024 * 1024;
 export const MAX_PENDING = 16 * 1024 * 1024;
+export const RECORDING_MIME_TYPE = 'video/webm;codecs=vp8,opus'; // ClaudeBWAI — named so the diagnostics log reports the same codec.
 export function recordingVideoBitrate(stream: Pick<MediaStream, 'getVideoTracks'>): number {
   const settings = stream.getVideoTracks()[0]?.getSettings() ?? {};
   return (settings.width ?? 0) >= 3000 || (settings.height ?? 0) >= 2000 ? 24000000 : 6000000;
@@ -19,7 +20,7 @@ export class Recording {
   private finishResolve: (() => void) | null = null;
   constructor(private readonly bridge: DesktopBridge, private readonly changed: (state: RecordingState) => void,
     private readonly make: (stream: MediaStream) => MediaRecorder = stream => {
-      const mimeType = 'video/webm;codecs=vp8,opus';
+      const mimeType = RECORDING_MIME_TYPE;
       if (!MediaRecorder.isTypeSupported(mimeType)) throw new Error('WebM recording is unavailable in this runtime.');
       return new MediaRecorder(stream, { mimeType, videoBitsPerSecond: recordingVideoBitrate(stream), audioBitsPerSecond: 128000 });
     }) {}

@@ -2,6 +2,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { createGuestServer: createRawGuestServer, parseRoute: parseRawRoute } = require('../desktop/guests.cjs');
@@ -394,7 +395,7 @@ describe('guest HTTP boundary', () => {
 
   test('static assets served with security headers', async (t) => {
     port = await freePort();
-    guests = createGuestServer({ directory: new URL('../dist', import.meta.url).pathname, probe: resolvedProbe }); t.after(() => guests.stop());
+    guests = createGuestServer({ directory: fileURLToPath(new URL('../dist', import.meta.url)), probe: resolvedProbe }); t.after(() => guests.stop());
     await guests.configure({ origin, port });
     const res = await request(port, 'GET', '/', { host: 'test.example.com' });
     assert.equal(res.status, 200);
@@ -417,7 +418,7 @@ describe('guest HTTP boundary', () => {
 
   test('readiness page is available before proof with media denied by its own policy', async t => {
     port = await freePort();
-    guests = createRawGuestServer({ directory: new URL('../dist', import.meta.url).pathname, probe: async () => { throw new Error('hairpin unavailable'); } }); t.after(() => guests.stop());
+    guests = createRawGuestServer({ directory: fileURLToPath(new URL('../dist', import.meta.url)), probe: async () => { throw new Error('hairpin unavailable'); } }); t.after(() => guests.stop());
     await guests.configure({ origin, port, routeType: 'direct' });
     const res = await request(port, 'GET', '/readiness', { host: 'test.example.com' });
     assert.equal(res.status, 200);
@@ -812,11 +813,20 @@ test('redemption is browser-bound; host admission and removal control session ac
   assert.equal(guests.admit(id).ok, true);
   assert.equal((await post('status', session)).body.phase, 'admitted');
   assert.equal((await post('redeem', token, { redemptionKey: randomBytes(32).toString('base64url') })).status, 410);
-  assert.equal((await post('redeem', token, { redemptionKey: key })).body.sessionCredential, session);
-  for (const endpoint of ['status', 'preview', 'leave']) assert.equal((await post(endpoint, session, { extra: true })).status, 400);
-  assert.equal((await post('status', session)).body.phase, 'admitted', 'invalid leave must not mutate');
+  // Same browser, same key: re-admission rejoin (new credential, old one dead, same host row).
+  const rejoined = await post('redeem', token, { redemptionKey: key });
+  assert.equal(rejoined.status, 200);
+  assert.notEqual(rejoined.body.sessionCredential, session);
+  assert.equal((await post('status', session)).status, 410, 'old tab credential is refused');
+  assert.equal(guests.status().guests.length, 1); assert.equal(guests.status().guests[0].session.id, id);
+  const session2 = rejoined.body.sessionCredential;
+  assert.equal((await post('join', session2, { name: 'Alice', consent: true, consentVersion: '1' })).status, 200);
+  assert.equal(guests.admit(id).ok, true);
+  for (const endpoint of ['status', 'preview', 'leave']) assert.equal((await post(endpoint, session2, { extra: true })).status, 400);
+  assert.equal((await post('status', session2)).body.phase, 'admitted', 'invalid leave must not mutate');
   assert.equal(guests.remove(id).ok, true);
-  assert.equal((await post('status', session)).status, 410);
+  assert.equal((await post('status', session2)).status, 410);
+  assert.equal((await post('redeem', token, { redemptionKey: key })).status, 410, 'removed guest cannot rejoin');
   assert.equal(guests.status().invite, null);
 });
 

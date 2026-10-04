@@ -3,6 +3,7 @@ import type { DirectAccessStatus, GuestStatus, HelperInput } from './bridge.js';
 import { InviteAutomation } from './invite-automation.js';
 import { createAdmissionPanel } from './admission-ui.js';
 import { normalizeExpressTurnAddress } from './relay-input.js';
+import { inviteCountOptions, clampInviteCount, generateLabel, shortInviteLink } from './invite-list.js';
 
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const panel = el('guest-panel');
@@ -13,7 +14,10 @@ const route = el('guest-route-status');
 const note = el('guest-invite-status');
 const automation = new InviteAutomation();
 let busy = false;
-type SavedSettings = { domain: 'yes' | 'no'; origin: string; port: number; helper: HelperInput; credentialSaved: true };
+let pendingWant = 1; // ClaudeBWAI — how many invitations the setup in flight was asked for.
+let openInvites: { id: string; url: string; expiresAt: number }[] = [];
+let inviteSlots: number | undefined;
+type SavedSettings = { domain: 'yes' | 'no'; origin: string; port: number; helper: HelperInput; freeRouteAcknowledged?: boolean; credentialSaved: true };
 let saved: SavedSettings | null = null;
 let settingsProblem = '';
 let settingsLoaded = false;
@@ -39,7 +43,7 @@ function render(value: GuestStatus): void {
   const check = value.readiness?.check ?? null;
   el<HTMLButtonElement>('create-guest-invite').disabled = busy || settingsLoading || wizardOpen;
   const liveInvite = value.phase === 'ready' && value.invite && value.invite.expiresAt > Date.now() ? value.invite : null;
-  el<HTMLButtonElement>('copy-guest-invite').disabled = busy || !liveInvite;
+  renderInvites(value, liveInvite);
   el<HTMLButtonElement>('revoke-guest-invites').disabled = busy || !ready;
   el<HTMLButtonElement>('stop-guests').disabled = value.phase === 'off';
   el<HTMLButtonElement>('copy-guest-readiness').disabled = busy || !check;
@@ -47,7 +51,6 @@ function render(value: GuestStatus): void {
   el('guest-readiness-actions').hidden = !check;
   if (value.phase === 'outside-check' && check) el<HTMLDetailsElement>('guest-troubleshooting').open = true;
   el<HTMLInputElement>('guest-readiness-link').value = check?.url ?? '';
-  el<HTMLInputElement>('guest-invite').value = liveInvite?.url ?? '';
   if (value.phase === 'off' && lastPhase !== null && lastPhase !== 'off') el<HTMLInputElement>('relay-password').value = '';
   if (value.phase === 'off') route.textContent = 'Guest access is off.';
   else if (value.phase === 'checking') route.textContent = 'Starting the local guest listener…';
@@ -75,7 +78,49 @@ function render(value: GuestStatus): void {
   const routeItem = document.querySelector<HTMLElement>('[data-readiness="route"]');
   if (routeItem?.firstChild) routeItem.firstChild.textContent = value.readiness?.routeType === 'tunnel' ? 'Provider route ' : 'Forwarding / firewall ';
   admissionPanel.update(value.guests);
-  if (!busy && automation.take(value)) void action(() => window.blastcast.createGuestInvite(), 'Creating your invitation…');
+  if (!busy && automation.take(value)) { const want = pendingWant; pendingWant = 1; void action(() => want > 1 ? window.blastcast.createGuestInvites(want) : window.blastcast.createGuestInvite(), want > 1 ? 'Creating your invitations…' : 'Creating your invitation…'); }
+}
+// ClaudeBWAI — open invitations as "Invite k  link  [Copy]" rows, rebuilt only when they change so a focused Copy keeps focus.
+let inviteRowsKey = '';
+function renderInvites(value: Extract<GuestStatus, { ok: true }>, liveInvite: { url: string; expiresAt: number } | null): void {
+  const now = Date.now();
+  openInvites = value.phase !== 'ready' ? [] : (value.invites ?? (liveInvite ? [{ id: 'latest', ...liveInvite }] : [])).filter(i => i.expiresAt > now);
+  inviteSlots = value.inviteSlots;
+  // Kept for the smoke tests and anything that reads "the newest link": a hidden mirror, never shown.
+  el<HTMLInputElement>('guest-invite').value = openInvites.at(-1)?.url ?? '';
+  const list = el('guest-invite-list');
+  const key = openInvites.map(i => `${i.id}|${i.url}`).join('\n');
+  if (key !== inviteRowsKey) {
+    inviteRowsKey = key;
+    list.replaceChildren(...openInvites.map((invite, index) => {
+      const row = document.createElement('li'); row.className = 'preview-controls';
+      const name = document.createElement('strong'); name.textContent = `Invite ${index + 1}`;
+      const link = document.createElement('span'); link.className = 'small'; link.textContent = shortInviteLink(invite.url); link.title = invite.url;
+      const copy = document.createElement('button'); copy.className = 'secondary'; copy.type = 'button'; copy.textContent = 'Copy'; copy.dataset.inviteId = invite.id;
+      copy.setAttribute('aria-label', `Copy invite ${index + 1}`);
+      copy.addEventListener('click', () => void copyInvite(invite.id));
+      row.append(name, link, copy);
+      return row;
+    }));
+  }
+  const all = el<HTMLButtonElement>('copy-all-guest-invites');
+  all.hidden = openInvites.length < 2; all.disabled = busy || openInvites.length < 2;
+  for (const b of list.querySelectorAll<HTMLButtonElement>('button')) b.disabled = busy;
+  renderInviteCount();
+}
+function renderInviteCount(): void {
+  const select = el<HTMLSelectElement>('guest-invite-count');
+  const options = inviteCountOptions(inviteSlots);
+  const chosen = clampInviteCount(Number(select.value), inviteSlots);
+  if (select.options.length !== options.length) select.replaceChildren(...options.map(n => new Option(String(n), String(n))));
+  select.value = String(chosen);
+  select.disabled = busy || settingsLoading || wizardOpen || inviteSlots === 0;
+  el<HTMLButtonElement>('create-guest-invite').textContent = generateLabel(chosen);
+  if (inviteSlots === 0) el<HTMLButtonElement>('create-guest-invite').disabled = true;
+}
+async function copyInvite(id: string): Promise<void> {
+  try { const value = await window.blastcast.copyGuestInvite(id); note.textContent = value.ok ? 'Link copied. Share it privately with your guest.' : value.message ?? 'Link could not be copied.'; }
+  catch { note.textContent = 'Link could not be copied. Select the invitation field and copy it.'; }
 }
 function renderDirect(value: DirectAccessStatus): void {
   lastDirectStatus = value;
@@ -108,7 +153,8 @@ async function action(run: () => Promise<GuestStatus>, message: string): Promise
   busy = true; renderHelper(); note.classList.remove('error'); note.textContent = message;
   el<HTMLButtonElement>('check-guest-route').disabled = true;
   el<HTMLButtonElement>('create-guest-invite').disabled = true;
-  el<HTMLButtonElement>('copy-guest-invite').disabled = true;
+  el<HTMLButtonElement>('copy-all-guest-invites').disabled = true; el<HTMLSelectElement>('guest-invite-count').disabled = true;
+  for (const b of el('guest-invite-list').querySelectorAll<HTMLButtonElement>('button')) b.disabled = true;
   el<HTMLButtonElement>('revoke-guest-invites').disabled = true;
   el<HTMLButtonElement>('stop-guests').disabled = false;
   try {
@@ -183,13 +229,25 @@ function renderHelper(): void {
   el('guest-wizard-back').hidden = wizardStep === 0;
   el('guest-wizard-next').hidden = wizardStep === 2;
   el('save-guest-settings').hidden = wizardStep !== 2;
-  el('helper-steps').hidden = !domain;
+  el('helper-steps').hidden = false;
+  // ClaudeBWAI — the no-domain path shows its own steps and none of the Cloudflare material.
+  for (const id of ['cloudflare-ready-figure','cloudflare-route-form-figure','cloudflare-route-ready-figure','helper-domain-note']) el(id).hidden = !domain;
   el('helper-reference-wrap').hidden = !domain;
+  el('cloudflare-privacy-note').hidden = !domain;
+  // ClaudeBWAI — the free route's amber privacy notice: Save & generate stays off until it is ticked.
+  el('free-privacy').hidden = domain || wizardStep !== 2 || el<HTMLSelectElement>('helper-domain').value !== 'no';
+  const freeUntick = !domain && !el<HTMLInputElement>('free-privacy-ack').checked;
   el('wizard-guest-origin-label').hidden = !domain;
   el('relay-saved-note').hidden = !saved?.credentialSaved;
   el('helper-provider').textContent = domain ? 'Connect your domain with Cloudflare Tunnel.' : 'BlastCast uses localhost.run Free to generate a temporary HTTPS address. No account or domain purchase is needed.';
   // Adapted from the official Cloudflare remotely-managed tunnel guide, checked 2026-09-29.
-  const instructions = [
+  const instructions = !domain ? [
+    'Nothing to install or sign up for. When you click Save & generate, BlastCast opens a temporary public address for you through localhost.run, using this computer\'s built-in OpenSSH.',
+    'The address is inside the invite link, and under Troubleshooting → Guest address. It works only while BlastCast stays open.',
+    'Next: paste your ExpressTURN details. That is the only thing to fill in.',
+    'The address changes every session, so generate a new invite each time.',
+    'If it fails: make sure the OpenSSH Client is installed (Windows: Settings → System → Optional features → OpenSSH Client) and that your network allows outgoing SSH.',
+  ] : [
     'Add your domain to Cloudflare. In Networking → Tunnels, create a named tunnel.',
     'Follow the dashboard instructions to run cloudflared on this computer. Wait for the tunnel to connect.',
     `Open Routes, click Add route, choose Published application, and use http://127.0.0.1:${port.value} as the Service URL. Leave Path empty and keep the additional settings at their defaults.`,
@@ -201,6 +259,8 @@ function renderHelper(): void {
   el('forget-guest-settings').hidden = (!saved && !settingsProblem) || wizardOpen;
   for (const id of ['create-guest-invite','edit-guest-settings','forget-guest-settings']) el<HTMLButtonElement>(id).disabled = busy || settingsLoading || wizardOpen;
   for (const id of ['guest-wizard-next','guest-wizard-back','guest-wizard-cancel','save-guest-settings','confirm-forget-guest-settings']) el<HTMLButtonElement>(id).disabled = busy;
+  el<HTMLButtonElement>('save-guest-settings').disabled = busy || freeUntick;
+  el<HTMLInputElement>('free-privacy-ack').disabled = busy;
   el<HTMLSelectElement>('helper-domain').disabled = busy;
   routeType.disabled = port.disabled = origin.disabled = busy;
   el<HTMLButtonElement>('check-guest-route').disabled = busy;
@@ -213,6 +273,7 @@ function restoreSettings(): void {
   el<HTMLInputElement>('relay-username').value = saved?.helper.relay.username ?? '';
   el<HTMLInputElement>('relay-password').value = '';
   el<HTMLInputElement>('relay-free').checked = Boolean(saved?.helper.freeAccountConfirmed);
+  el<HTMLInputElement>('free-privacy-ack').checked = Boolean(saved?.freeRouteAcknowledged);
   el<HTMLInputElement>('relay-only').checked = saved?.helper.relay.iceTransportPolicy === 'relay';
 }
 function openWizard(): void {
@@ -238,12 +299,14 @@ async function loadSettings(): Promise<boolean> {
 function cancelAutomaticInvite(): void { automation.cancel(); }
 port.addEventListener('input', () => { cancelAutomaticInvite(); renderRouteNote(); renderHelper(); });
 el('helper-domain').addEventListener('change', () => { cancelAutomaticInvite(); renderHelper(); });
+el('free-privacy-ack').addEventListener('change', renderHelper);
 routeType.addEventListener('change', () => { cancelAutomaticInvite(); renderRouteNote(); renderDirect(lastDirectStatus); });
 origin.addEventListener('input', cancelAutomaticInvite);
 function wizardError(message: string): void { el('guest-wizard-status').textContent = message; }
 function helperInput(): HelperInput | null {
   const domain = el<HTMLSelectElement>('helper-domain').value;
   if (domain !== 'yes' && domain !== 'no') { wizardError('Choose whether you have a domain first.'); return null; }
+  if (domain === 'no' && !el<HTMLInputElement>('free-privacy-ack').checked) { wizardError('Tick the privacy notice to use the free address.'); return null; }
   if (!el<HTMLInputElement>('relay-free').checked) { wizardError('Confirm that this is your Free account.'); return null; }
   const relayUrls = el<HTMLTextAreaElement>('relay-urls');
   const urls = relayUrls.value.split(/\r?\n/).map(normalizeExpressTurnAddress).filter(Boolean);
@@ -273,13 +336,26 @@ for (const [id, provider] of [['helper-reference', 'cloudflare'], ['expressturn-
 function startSetup(run: () => Promise<GuestStatus>, message: string): void {
   if (busy) return;
   const setup = automation.begin(); el<HTMLInputElement>('guest-invite').value = '';
-  void action(async () => { const result = await run(); automation.accept(setup,result); return result; },message);
+  const want = clampInviteCount(Number(el<HTMLSelectElement>('guest-invite-count').value), inviteSlots); pendingWant = want;
+  void action(async () => {
+    let result = await run(); automation.accept(setup,result);
+    // The saved-settings road makes the first invitation; the rest of the batch follows as one call (the main process refuses an over-limit count whole).
+    if (result.ok && want > 1 && result.phase === 'ready' && result.invite) { pendingWant = 1; result = await window.blastcast.createGuestInvites(want - 1); }
+    return result;
+  },message);
 }
 function generateSaved(): void { startSetup(() => window.blastcast.generateSavedGuestInvite(), 'Generating your invitation…'); }
 el('create-guest-invite').addEventListener('click', async () => {
   if (busy || settingsLoading || wizardOpen) return;
   if (!settingsLoaded && !await loadSettings()) { openWizard(); return; }
-  if (!saved) openWizard(); else generateSaved();
+  if (!saved) { openWizard(); return; }
+  // ClaudeBWAI — guest access already running: the whole batch is one main-process call, created whole or refused whole.
+  if (lastPhase === 'ready') {
+    const want = clampInviteCount(Number(el<HTMLSelectElement>('guest-invite-count').value), inviteSlots);
+    void action(() => want > 1 ? window.blastcast.createGuestInvites(want) : window.blastcast.createGuestInvite(), want > 1 ? 'Creating your invitations…' : 'Creating your invitation…');
+    return;
+  }
+  generateSaved();
 });
 el('edit-guest-settings').addEventListener('click', async () => { if (!settingsLoaded) await loadSettings(); openWizard(); });
 el('guest-wizard-cancel').addEventListener('click', cancelWizard);
@@ -297,7 +373,7 @@ el('guest-wizard-next').addEventListener('click', () => {
 el('save-guest-settings').addEventListener('click', async () => {
   if (busy || !wizardOpen || wizardStep !== 2) return;
   const helper = helperInput(); if (!helper) return;
-  const input = {domain:el<HTMLSelectElement>('helper-domain').value as 'yes' | 'no',origin:helper.provider === 'cloudflare' ? origin.value.trim() : '',port:Number(port.value),helper};
+  const input = {domain:el<HTMLSelectElement>('helper-domain').value as 'yes' | 'no',origin:helper.provider === 'cloudflare' ? origin.value.trim() : '',port:Number(port.value),helper,freeRouteAcknowledged:helper.provider === 'localhost-run' && el<HTMLInputElement>('free-privacy-ack').checked};
   const generation = ++actionGeneration;
   busy = true; renderHelper(); wizardError('Saving guest settings…');
   try {
@@ -331,9 +407,10 @@ el('stop-guests').addEventListener('click', () => {
   cancelAutomaticInvite(); actionGeneration++; busy = false;
   void action(() => window.blastcast.stopGuests(), 'Turning guest access off…');
 });
-el('copy-guest-invite').addEventListener('click', async () => {
-  try { const value = await window.blastcast.copyGuestInvite(); note.textContent = value.ok ? 'Link copied. Share it privately with your guest.' : value.message ?? 'Link could not be copied.'; }
-  catch { note.textContent = 'Link could not be copied. Select the invitation field and copy it.'; }
+el('guest-invite-count').addEventListener('change', renderInviteCount);
+el('copy-all-guest-invites').addEventListener('click', async () => {
+  try { const value = await window.blastcast.copyAllGuestInvites(); note.textContent = value.ok ? 'Links copied. Share each one privately with its own guest.' : value.message ?? 'Links could not be copied.'; }
+  catch { note.textContent = 'Links could not be copied. Copy each one with its own button.'; }
 });
 el('copy-guest-readiness').addEventListener('click', async () => {
   try { const value = await window.blastcast.copyGuestReadiness(); note.textContent = value.ok ? 'Private check link copied. Open it only on the outside device.' : value.message ?? 'Check link could not be copied.'; }

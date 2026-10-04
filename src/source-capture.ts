@@ -5,11 +5,14 @@ import type {
   SourceCaptureState,
   SourceStart,
 } from './source-protocol.js';
+import { SOURCE_AUDIO_BPS, SOURCE_PROBE_TIMEOUT_MS, SOURCE_VIDEO_SLOW_BPS, chooseSourceVideoBps, type SourceUplink } from './source-bitrate.js';
 import {
   SOURCE_MIME,
   SOURCE_MAX_CHUNK,
   SOURCE_MAX_PENDING,
 } from './source-protocol.js';
+
+export const DURABLE_BACKLOG_MESSAGE = 'This device could not save your recording fast enough, so your original stopped. What was already saved stays on this device; keep this page open and tell the host.';
 
 export class SourceCapture {
   private _state: SourceCaptureState = {
@@ -24,7 +27,8 @@ export class SourceCapture {
 
   private transport: SourceTransport;
   private onState: (state: SourceCaptureState) => void;
-  private makeRecorder: (stream: MediaStream) => MediaRecorder;
+  private makeRecorder: (stream: MediaStream, bits: { videoBitsPerSecond: number; audioBitsPerSecond: number }) => MediaRecorder;
+  private uplink?: () => Promise<SourceUplink | null>;
   private now: () => number;
   private drainTimeoutMs: number;
   private finalizeTimeoutMs: number;
@@ -46,17 +50,32 @@ export class SourceCapture {
   private queuedBytes = 0;
   private durable?: DurableSourceSink;
   private durationTimer?: ReturnType<typeof setTimeout>;
+  // ClaudeBWAI — Safari (iOS 18) ignores start(timeslice): one blob at stop. requestData() does slice there, so when no
+  // real slice arrives soon after start, a timer asks for one every SLICE_MS (measured on einh's iPhone, 3 Oct).
+  private sliceMs: number;
+  private sliceWatchMs: number;
+  private sliceWatch?: ReturnType<typeof setTimeout>;
+  private sliceTimer?: ReturnType<typeof setInterval>;
+  private sliced = false;
+  private rearmDrain?: () => void;
 
   constructor(options: {
     transport: SourceTransport;
     allowPartialSource?: boolean;
     onState: (state: SourceCaptureState) => void;
-    makeRecorder?: (stream: MediaStream) => MediaRecorder;
+    makeRecorder?: (stream: MediaStream, bits: { videoBitsPerSecond: number; audioBitsPerSecond: number }) => MediaRecorder;
+    /** The guest's live uplink estimate, asked once when the take starts. Absent or unanswered: the safe rate. */
+    uplink?: () => Promise<SourceUplink | null>;
     now?: () => number;
     drainTimeoutMs?: number;
     finalizeTimeoutMs?: number;
+    /** Slice length asked of the recorder (ms). */
+    sliceMs?: number;
+    /** How long to wait for a first real slice before driving the recorder with requestData (ms). */
+    sliceWatchMs?: number;
     durable?: (progress: (state: SourceDeliveryProgress) => void, failed: (message: string) => void) => DurableSourceSink;
   }) {
+    this.uplink = options.uplink;
     this.transport = options.transport;
     this.allowPartialSource = options.allowPartialSource === true;
     this.durable = options.durable?.(state => {
@@ -66,10 +85,12 @@ export class SourceCapture {
     this.onState = options.onState;
     this.makeRecorder =
       options.makeRecorder ||
-      ((stream) => new MediaRecorder(stream, { mimeType: SOURCE_MIME }));
+      ((stream, bits) => new MediaRecorder(stream, { mimeType: SOURCE_MIME, ...bits }));
     this.now = options.now || (() => performance.now());
     const dt = options.drainTimeoutMs ?? 30000;
     this.drainTimeoutMs = (Number.isFinite(dt) && dt > 0) ? Math.min(dt, 30000) : 30000;
+    this.sliceMs = options.sliceMs ?? 500;
+    this.sliceWatchMs = options.sliceWatchMs ?? 1200;
     const ft = options.finalizeTimeoutMs ?? 120000;
     this.finalizeTimeoutMs = (Number.isFinite(ft) && ft > 0) ? Math.min(ft, 120000) : 120000;
   }
@@ -127,7 +148,7 @@ export class SourceCapture {
       return;
     }
 
-    if (width > 3840 || height > 2160) {
+    if (Math.max(width, height) > 3840 || Math.min(width, height) > 2160) {
       await this.fail('Source dimensions exceed 3840x2160');
       return;
     }
@@ -153,8 +174,12 @@ export class SourceCapture {
     this.queue = [];
     this.queuedBytes = 0;
     
+    // One MediaRecorder is one take, so the rate is fixed here for the whole take (Safari may ignore it; slicing is unaffected).
+    const videoBitsPerSecond = await this.pickVideoBps();
+    this.videoBps = videoBitsPerSecond;
+    if (this.failed || this.stopped) return;
     try {
-      this.recorder = this.makeRecorder(stream);
+      this.recorder = this.makeRecorder(stream, { videoBitsPerSecond, audioBitsPerSecond: SOURCE_AUDIO_BPS });
     } catch (e: any) {
       await this.fail('Recorder creation failed: ' + e.message);
       return;
@@ -168,11 +193,13 @@ export class SourceCapture {
     this.lastEventMonoMs = startedMonoMs;
     
     try {
-      this.recorder.start(500);
+      this.recorder.start(this.sliceMs);
     } catch (e: any) {
       await this.fail('Recorder start failed: ' + e.message);
       return;
     }
+    this.sliced = false;
+    this.sliceWatch = setTimeout(() => this.driveSlices(), this.sliceWatchMs);
 
     const hostStartedMs = options.clock.hostNowMs + startedMonoMs - options.clock.localMonoMs;
     
@@ -191,7 +218,7 @@ export class SourceCapture {
           width,
           height
         };
-        if (this.durable) { await this.durable.open(descriptor); return; }
+        if (this.durable) { await this.durable.open(descriptor, { videoBps: this.videoBps, audioBps: SOURCE_AUDIO_BPS }); return; }
         const ack = await this.transport.begin(descriptor);
         if (!ack.ok) {
           throw new Error(ack.message);
@@ -203,6 +230,31 @@ export class SourceCapture {
         await this.fail('Begin failed: ' + e.message);
       }
     })();
+  }
+
+  private videoBps = SOURCE_VIDEO_SLOW_BPS;
+  private async pickVideoBps(): Promise<number> {
+    if (!this.uplink) return SOURCE_VIDEO_SLOW_BPS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const up = await Promise.race([this.uplink(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), SOURCE_PROBE_TIMEOUT_MS); })]);
+      return up ? chooseSourceVideoBps(up.availableBps, up.callCapBps) : SOURCE_VIDEO_SLOW_BPS;
+    } catch { return SOURCE_VIDEO_SLOW_BPS; }
+    finally { clearTimeout(timer); }
+  }
+
+  /** The recorder did not honour the timeslice: ask for each slice. Chromium never gets here (it slices on its own). */
+  private driveSlices(): void {
+    const recorder = this.recorder;
+    if (this.sliced || this.stopped || this.failed || !recorder || typeof recorder.requestData !== 'function') return;
+    this.sliceTimer = setInterval(() => {
+      if (this.stopped || this.failed || recorder !== this.recorder || recorder.state !== 'recording') { this.stopSlicing(); return; }
+      try { recorder.requestData(); } catch { this.stopSlicing(); }
+    }, this.sliceMs);
+  }
+  private stopSlicing(): void {
+    clearTimeout(this.sliceWatch); this.sliceWatch = undefined;
+    clearInterval(this.sliceTimer); this.sliceTimer = undefined;
   }
 
   private handleTrackEnded = () => {
@@ -229,6 +281,7 @@ export class SourceCapture {
         }
         return;
       }
+      if (!this.stopped) { this.sliced = true; clearTimeout(this.sliceWatch); }
       const endMonoMs = this.now();
       const startMonoMs = this.lastEventMonoMs;
       this.lastEventMonoMs = endMonoMs;
@@ -238,12 +291,22 @@ export class SourceCapture {
         pendingBytes: this._state.pendingBytes + e.data.size
       });
       
-      if (e.data.size > SOURCE_MAX_CHUNK) {
+      // ClaudeBWAI — a durable (guest) original stores 64 KiB pieces in the browser, so one big slice (a recorder that
+      // only delivers at stop) is split, not refused; the browser store's own budget bounds it. The 8 MiB slice limit
+      // only guards the host's direct path, where a slice is sent whole.
+      if (!this.durable && e.data.size > SOURCE_MAX_CHUNK) {
         this.fail('Chunk exceeds maximum size');
         return;
       }
+      // ClaudeBWAI — Codex review of 68ea271 (P2): the guest's not-yet-stored backlog is bounded too. Up to 16 MiB may wait
+      // for the browser store, plus the slice arriving now (whatever its size: one blob at stop is still accepted). A store
+      // that stalls while slices keep coming ends this original with a plain message instead of growing memory forever.
+      if (this.durable && this.queuedBytes > SOURCE_MAX_PENDING) {
+        this.fail(DURABLE_BACKLOG_MESSAGE);
+        return;
+      }
       this.queuedBytes += e.data.size;
-      if ((this.durable ? this.queuedBytes : this._state.pendingBytes) > SOURCE_MAX_PENDING) {
+      if (!this.durable && this._state.pendingBytes > SOURCE_MAX_PENDING) {
         this.fail('Pending bytes bound exceeded');
         return;
       }
@@ -296,6 +359,7 @@ export class SourceCapture {
           this.pendingCount--;
           if (this.failed) break;
           this.sequence++; this.queue.shift(); this.queuedBytes -= buffer.byteLength;
+          this.rearmDrain?.();
           continue;
         }
         const ack = await this.transport.append(chunk, buffer);
@@ -313,6 +377,7 @@ export class SourceCapture {
         this.sequence++;
         this.queue.shift();
         this.queuedBytes -= buffer.byteLength;
+        this.rearmDrain?.();
 
         this.updateState({
           acknowledgedBytes: this._state.acknowledgedBytes + buffer.byteLength,
@@ -339,6 +404,7 @@ export class SourceCapture {
     
     this.stopped = true;
     clearTimeout(this.durationTimer);
+    this.stopSlicing();
     this.updateState({ phase: 'stopping', message: 'Stopping capture...' });
     
     this.activeStopPromise = (async () => {
@@ -362,15 +428,20 @@ export class SourceCapture {
 
       let timerId: ReturnType<typeof setTimeout>;
       try {
+        // ClaudeBWAI — the drain timeout measures a stall, not the whole drain: every stored or sent piece re-arms it,
+        // so a large last slice (split into many pieces) is not cut off while it is still moving.
         await Promise.race([
           drained,
-          new Promise((_, reject) => { timerId = setTimeout(() => reject(new Error('Drain timeout')), this.drainTimeoutMs); })
+          new Promise((_, reject) => {
+            this.rearmDrain = () => { clearTimeout(timerId); timerId = setTimeout(() => reject(new Error('Drain timeout')), this.drainTimeoutMs); };
+            this.rearmDrain();
+          })
         ]);
       } catch (e: any) {
         await this.fail(e.message);
         return;
       } finally {
-        clearTimeout(timerId!);
+        clearTimeout(timerId!); this.rearmDrain = undefined;
       }
 
       if (this.failed) return;
@@ -413,6 +484,7 @@ export class SourceCapture {
 
   private cleanup() {
     clearTimeout(this.durationTimer);
+    this.stopSlicing();
     for (const track of this.activeTracks) {
       track.removeEventListener('ended', this.handleTrackEnded);
     }

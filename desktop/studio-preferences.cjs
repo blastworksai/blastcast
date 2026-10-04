@@ -7,14 +7,25 @@ const { randomUUID } = require('node:crypto');
 const SCENES = new Set(['1cam', '2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8']);
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_PNG_BYTES = 20 * 1024 * 1024;
+// ClaudeBWAI — camera background: optional devices.json key plus one PNG/JPEG image file.
+const BACKGROUNDS = ['off', 'blur', 'image'];
+const MAX_BACKGROUND_BYTES = 15 * 1024 * 1024;
+const BACKGROUND_FILES = { png: 'camera-background.png', jpg: 'camera-background.jpg' };
+function imageType(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 12 || bytes.length > MAX_BACKGROUND_BYTES) throw new Error('Choose a PNG or JPEG image no larger than 15 MB.');
+  if (bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return 'png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
+  throw new Error('Choose a PNG or JPEG image no larger than 15 MB.');
+}
 const DEFAULT_DEVICES = Object.freeze({ camera: '', microphone: '', height: 1080 });
 
 function devices(value, migrateLegacy = false) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.keys(value).some(key => !['camera', 'microphone', 'height'].includes(key))
+    || Object.keys(value).some(key => !['camera', 'microphone', 'height', 'background'].includes(key))
+    || (Object.hasOwn(value, 'background') && !BACKGROUNDS.includes(value.background))
     || !['camera', 'microphone'].every(key => typeof value[key] === 'string' && value[key].length <= 512 && !/[\u0000-\u001f\u007f]/u.test(value[key]))
     || ![1080, 2160, ...(migrateLegacy ? [720] : [])].includes(value.height)) throw new Error('Invalid device preferences. Choose the devices and resolution again.');
-  return { camera: value.camera, microphone: value.microphone, height: value.height === 720 ? 1080 : value.height };
+  return { camera: value.camera, microphone: value.microphone, height: value.height === 720 ? 1080 : value.height, ...(Object.hasOwn(value, 'background') ? { background: value.background } : {}) };
 }
 function png(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length < PNG_SIGNATURE.length || bytes.length > MAX_PNG_BYTES || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
@@ -97,7 +108,29 @@ function createStudioPreferences({ directory }) {
     }
     return { ok: true, backdrops: values };
   }
+  async function backgroundImage() {
+    await ensureDirectory();
+    for (const [type, name] of Object.entries(BACKGROUND_FILES)) {
+      const bytes = await read(path.join(root, name), MAX_BACKGROUND_BYTES);
+      if (bytes) return `data:image/${type === 'png' ? 'png' : 'jpeg'};base64,${bytes.toString('base64')}`;
+    }
+    return null;
+  }
   return {
+    loadBackgroundImage: () => result(async () => ({ ok: true, dataUrl: await backgroundImage() })),
+    saveBackgroundImage: bytes => mutate(async () => {
+      const type = imageType(bytes);
+      await write(path.join(root, BACKGROUND_FILES[type]), Buffer.from(bytes), MAX_BACKGROUND_BYTES);
+      // Only one background exists at a time.
+      const other = path.join(root, BACKGROUND_FILES[type === 'png' ? 'jpg' : 'png']);
+      if (await regular(other, MAX_BACKGROUND_BYTES)) await fs.unlink(other);
+      return { ok: true, dataUrl: await backgroundImage() };
+    }),
+    clearBackgroundImage: () => mutate(async () => {
+      await ensureDirectory();
+      for (const name of Object.values(BACKGROUND_FILES)) if (await regular(path.join(root, name), MAX_BACKGROUND_BYTES)) await fs.unlink(path.join(root, name));
+      return { ok: true };
+    }),
     loadDevices: () => result(async () => {
       await ensureDirectory();
       const bytes = await read(path.join(root, 'devices.json'), 4096);
@@ -125,4 +158,4 @@ function createStudioPreferences({ directory }) {
   };
 }
 
-module.exports = { createStudioPreferences, MAX_PNG_BYTES };
+module.exports = { createStudioPreferences, MAX_PNG_BYTES, MAX_BACKGROUND_BYTES };

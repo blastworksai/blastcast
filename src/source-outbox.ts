@@ -1,9 +1,12 @@
 // CodexBWAI — local persistence and host delivery are deliberately separate receipts.
+import { sourcePaceBytesPerSec } from './source-bitrate.js';
 import type { SourceDescriptor, SourceChunk, SourceEnd, SourceFinishAck, SourceTransport } from './source-protocol.js';
-export const SOURCE_TRANSFER_PIECE = 64 * 1024;
-const MAX_RETAINED_BYTES = 2 * 1024 * 1024 * 1024;
+import { SOURCE_PIECE_BYTES, SOURCE_RETAINED_BYTES } from './source-limits.js';
+export const SOURCE_TRANSFER_PIECE = SOURCE_PIECE_BYTES;
+const MAX_RETAINED_BYTES = SOURCE_RETAINED_BYTES;
 export class SourceTransportError extends Error {
-  constructor(message: string, readonly retryable: boolean) { super(message); }
+  // gone: the host says this epoch/guest/episode can never accept the data (HTTP 410). Only that ends delivery.
+  constructor(message: string, readonly retryable: boolean, readonly gone = false) { super(message); }
 }
 export type SourceRecoveryBinding = { participantId: string; recoveryKey: string };
 export type LocalSourceRecord = { descriptor: SourceDescriptor; participantId: string | null; recoveryKey: string | null;
@@ -45,23 +48,25 @@ export class IndexedSourceQueue implements SourceQueue {
     if (!navigator.locks) return Promise.reject(new Error('Safe local recording storage is unavailable in this browser.'));
     return navigator.locks.request(this.lockName, { mode: 'exclusive' }, action);
   }
-  private async transaction<T>(write: boolean, action: (tx: IDBTransaction, result: (value: T) => void) => void): Promise<T> {
+  private async transaction<T>(write: boolean, action: (tx: IDBTransaction, result: (value: T) => void, refuse: (reason: string) => void) => void): Promise<T> {
     const db = await this.db;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(['records','chunks','budget'], write ? 'readwrite' : 'readonly', { durability: 'strict' });
-      let value: T;
+      let value: T, reason: string | null = null;
+      // An explicit abort leaves tx.error null, so the refusal records its own reason first.
+      const refuse = (why: string) => { reason = why; tx.abort(); };
       tx.oncomplete = () => resolve(value);
-      tx.onabort = () => reject(tx.error ?? new Error('Local recording storage transaction failed.'));
+      tx.onabort = () => reject(tx.error ?? new Error(reason ?? 'Local recording storage transaction failed.'));
       tx.onerror = () => {}; // Abort delivers the error; never resolve from request success alone.
-      try { action(tx, result => { value = result; }); }
+      try { action(tx, result => { value = result; }, refuse); }
       catch (error) { tx.abort(); reject(error); }
     });
   }
   async create(descriptor: SourceDescriptor): Promise<void> {
-    return this.locked(() => this.transaction<void>(true, tx => {
+    return this.locked(() => this.transaction<void>(true, (tx, _result, refuse) => {
       const records = tx.objectStore('records'), count = records.count();
       count.onsuccess = () => {
-        if (count.result >= 64) { tx.abort(); return; }
+        if (count.result >= 64) { refuse('Local recording storage already holds 64 recordings.'); return; }
         records.add({descriptor,participantId:this.binding?.participantId ?? null,recoveryKey:this.binding?.recoveryKey ?? null,
           next:0,acked:0,bytes:0,ackedBytes:0,end:null}, descriptor.epochId);
       };
@@ -69,13 +74,17 @@ export class IndexedSourceQueue implements SourceQueue {
   }
   async append(chunk: SourceChunk, bytes: ArrayBuffer): Promise<void> {
     if (bytes.byteLength !== chunk.byteLength || !bytes.byteLength || bytes.byteLength > SOURCE_TRANSFER_PIECE) throw new Error('Invalid local source piece.');
-    return this.locked(() => this.transaction<void>(true, tx => {
+    return this.locked(() => this.transaction<void>(true, (tx, _result, refuse) => {
       const records = tx.objectStore('records'), budget = tx.objectStore('budget');
       const record = records.get(chunk.epochId), used = budget.get('bytes');
       used.onsuccess = () => {
         const r = record.result as LocalSourceRecord | undefined;
         const total = (used.result ?? 0) + bytes.byteLength;
-        if (!r || r.end || r.descriptor.episodeId !== chunk.episodeId || r.next !== chunk.sequence || total > this.maxBytes) { tx.abort(); return; }
+        if (!r) { refuse('Local recording storage has no record for this epoch.'); return; }
+        if (r.end) { refuse('Local recording is already sealed.'); return; }
+        if (r.descriptor.episodeId !== chunk.episodeId) { refuse('Local recording belongs to a different episode.'); return; }
+        if (r.next !== chunk.sequence) { refuse(`Local recording piece is out of order (expected ${r.next}, got ${chunk.sequence}).`); return; }
+        if (total > this.maxBytes) { refuse(`Local recording storage is over its ${this.maxBytes}-byte budget.`); return; }
         tx.objectStore('chunks').add({chunk,bytes}, [chunk.epochId,chunk.sequence]);
         records.put({...r,next:r.next+1,bytes:r.bytes+bytes.byteLength}, chunk.epochId);
         budget.put(total,'bytes');
@@ -83,48 +92,48 @@ export class IndexedSourceQueue implements SourceQueue {
     }));
   }
   async peek(epochId: string): Promise<{record: LocalSourceRecord; item: SourceQueueItem | null}> {
-    return this.transaction(false, (tx, result) => {
+    return this.transaction(false, (tx, result, refuse) => {
       const request = tx.objectStore('records').get(epochId);
       request.onsuccess = () => {
         const record = request.result as LocalSourceRecord | undefined;
-        if (!record) { tx.abort(); return; }
+        if (!record) { refuse('Local recording storage has no record for this epoch.'); return; }
         const item = tx.objectStore('chunks').get([epochId,record.acked]);
         item.onsuccess = () => {
-          if (record.acked < record.next && !item.result) { tx.abort(); return; }
+          if (record.acked < record.next && !item.result) { refuse('Local recording storage is missing an unacknowledged piece.'); return; }
           result({record,item:item.result ?? null});
         };
       };
     });
   }
   async acknowledge(chunk: SourceChunk): Promise<void> {
-    return this.locked(() => this.transaction<void>(true, tx => {
+    return this.locked(() => this.transaction<void>(true, (tx, _result, refuse) => {
       const records = tx.objectStore('records'), chunks = tx.objectStore('chunks'), budget = tx.objectStore('budget');
       const record = records.get(chunk.epochId), item = chunks.get([chunk.epochId,chunk.sequence]), used = budget.get('bytes');
       used.onsuccess = () => {
         const r = record.result as LocalSourceRecord | undefined;
         const local = item.result as SourceQueueItem | undefined;
-        if (!r || !local || r.acked !== chunk.sequence || local.chunk.sha256 !== chunk.sha256 || local.chunk.byteLength !== chunk.byteLength) { tx.abort(); return; }
+        if (!r || !local || r.acked !== chunk.sequence || local.chunk.sha256 !== chunk.sha256 || local.chunk.byteLength !== chunk.byteLength) { refuse('Local recording acknowledgement does not match the stored piece.'); return; }
         records.put({...r,acked:r.acked+1,ackedBytes:r.ackedBytes+chunk.byteLength},chunk.epochId);
         chunks.delete([chunk.epochId,chunk.sequence]); budget.put(used.result-chunk.byteLength,'bytes');
       };
     }));
   }
   async seal(end: SourceEnd): Promise<void> {
-    return this.locked(() => this.transaction<void>(true, tx => {
+    return this.locked(() => this.transaction<void>(true, (tx, _result, refuse) => {
       const records = tx.objectStore('records'), request = records.get(end.epochId);
       request.onsuccess = () => {
         const r = request.result as LocalSourceRecord | undefined;
-        if (!r || r.descriptor.episodeId !== end.episodeId || r.next !== end.chunkCount || r.end) { tx.abort(); return; }
+        if (!r || r.descriptor.episodeId !== end.episodeId || r.next !== end.chunkCount || r.end) { refuse('Local recording cannot be sealed: unknown, mismatched, or already sealed.'); return; }
         records.put({...r,end},end.epochId);
       };
     }));
   }
   async complete(epochId: string): Promise<void> {
-    return this.locked(() => this.transaction<void>(true, tx => {
+    return this.locked(() => this.transaction<void>(true, (tx, _result, refuse) => {
       const records = tx.objectStore('records'), request = records.get(epochId);
       request.onsuccess = () => {
         const r = request.result as LocalSourceRecord | undefined;
-        if (!r?.end || r.acked !== r.next || r.ackedBytes !== r.bytes) { tx.abort(); return; }
+        if (!r?.end || r.acked !== r.next || r.ackedBytes !== r.bytes) { refuse('Local recording cannot be completed before it is sealed and fully acknowledged.'); return; }
         records.delete(epochId);
       };
     }));
@@ -146,7 +155,7 @@ export class IndexedSourceQueue implements SourceQueue {
 
 export type SourceDeliveryProgress = { acknowledgedBytes: number; message: string };
 export interface DurableSourceSink {
-  open(descriptor: SourceDescriptor): Promise<void>;
+  open(descriptor: SourceDescriptor, rate?: { videoBps: number; audioBps?: number }): Promise<void>;
   append(chunk: SourceChunk, bytes: ArrayBuffer): Promise<void>;
   finish(end: SourceEnd): Promise<SourceFinishAck>;
   cancel(): void;
@@ -154,12 +163,15 @@ export interface DurableSourceSink {
 }
 export class SourceOutbox implements DurableSourceSink {
   private epochId = '';
+  /** Bytes/s while recording: follows the take's chosen bitrate (floor 256 KiB/s). After stop the pace is 1 MiB/s. */
+  recordingPace = sourcePaceBytesPerSec(0);
   private running = false;
   private requested = false;
   private cancelled = false;
   private begun = false;
   private sealed = false;
   private nextUploadAt = 0;
+  private failureDelay = 0;
   private acknowledgedBytes = 0;
   private finishResolve?: (ack: SourceFinishAck) => void;
   private finishReject?: (error: Error) => void;
@@ -174,7 +186,8 @@ export class SourceOutbox implements DurableSourceSink {
     this.now = options.now ?? (() => performance.now());
     this.sleep = options.sleep ?? (ms => new Promise(resolve => { this.wake = resolve; this.timer = setTimeout(resolve, ms); }));
   }
-  async open(descriptor: SourceDescriptor): Promise<void> {
+  async open(descriptor: SourceDescriptor, rate?: { videoBps: number; audioBps?: number }): Promise<void> {
+    if (rate) this.recordingPace = sourcePaceBytesPerSec(rate.videoBps, rate.audioBps);
     await this.options.store.create(descriptor); this.epochId = descriptor.epochId;
     if (!this.cancelled) this.kick();
   }
@@ -220,11 +233,18 @@ export class SourceOutbox implements DurableSourceSink {
     this.requested = true;
     if (this.running || this.cancelled) return;
     this.running = true;
-    this.runningTask = this.deliver().catch(() => {
-      if (!this.cancelled) {
-        this.options.failed('Original delivery could not be verified. Previously saved local media is retained; keep this page open.');
+    this.runningTask = this.deliver().catch(async (error) => {
+      if (this.cancelled) return;
+      if (error instanceof SourceTransportError && error.gone) {
+        this.options.failed('The host closed this original. Previously saved local media is retained; save a recovery file.');
         this.cancel();
+        return;
       }
+      // Any other failure must never stop the local recording: chunks stay in the browser outbox and delivery retries with capped backoff.
+      this.options.progress({acknowledgedBytes:this.acknowledgedBytes,message:'The host did not accept the last upload. Recording continues and is saved on this device while delivery retries. Keep this page open.'});
+      this.failureDelay = Math.min(this.failureDelay*2||1000,30000);
+      try { await this.sleep(this.failureDelay); } catch { /* ignore */ }
+      if (!this.cancelled) this.requested = true;
     }).finally(() => { this.running = false; this.runningTask = null; if (this.requested && !this.cancelled) this.kick(); });
   }
   private async deliver(): Promise<void> {
@@ -242,11 +262,12 @@ export class SourceOutbox implements DurableSourceSink {
         const ack = await this.retry(async () => {
           const delay = this.nextUploadAt-this.now(); if (delay>0) await this.sleep(delay);
           this.alive();
-          this.nextUploadAt = this.now()+c.byteLength/(this.sealed ? 1048576 : 262144)*1000;
+          this.nextUploadAt = this.now()+c.byteLength/(this.sealed ? 1048576 : this.recordingPace)*1000;
           return this.options.transport.append(c,item.bytes);
         });
         if (!ack.ok || ack.episodeId !== c.episodeId || ack.epochId !== c.epochId || ack.sequence !== c.sequence || ack.sha256 !== c.sha256 || ack.byteLength !== c.byteLength) throw new Error('Invalid chunk receipt');
         await this.options.store.acknowledge(c); this.alive();
+        this.failureDelay = 0;
         this.acknowledgedBytes = record.ackedBytes+c.byteLength;
         this.options.progress({acknowledgedBytes:this.acknowledgedBytes,message:'Recording delivery in progress. Keep this page open until the host verifies your original.'});
       } else if (record.end) {

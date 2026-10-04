@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const {createGuestAccess}=createRequire(import.meta.url)('../desktop/guest-access.cjs');
-const input={port:43821,helper:{provider:'localhost-run',freeAccountConfirmed:true,relay:{urls:['turn:eu.expressturn.com:3478?transport=udp'],username:'test',credential:'fixture-only',iceTransportPolicy:'all'}}};
+const input={port:43821,privacyAcknowledged:true,helper:{provider:'localhost-run',freeAccountConfirmed:true,relay:{urls:['turn:eu.expressturn.com:3478?transport=udp'],username:'test',credential:'fixture-only',iceTransportPolicy:'all'}}};
 function fixture(overrides={}) {
  const order=[];let phase='off';
  const guests={revoke:()=>order.push('revoke'),stop:async()=>{order.push('listener-stop');phase='off';},status:()=>({ok:true,phase,invite:null}),configure:async(config,origin)=>{order.push('listener-bound');if(origin)config={...config,origin:await origin(config.port)};phase='outside-check';return {ok:true,phase,origin:config.origin};},...overrides.guests};
@@ -30,4 +30,8 @@ test('stop during setup rejects late address and overlapping setup',async()=>{
 });
 test('unexpected tunnel loss closes guest sessions and retains understandable error',async()=>{
  const {access,order}=fixture();await access.startFree(input);await access.lost('Temporary address disconnected.');assert.equal(access.status().phase,'off');assert.equal(access.status().connectionMessage,'Temporary address disconnected.');assert.deepEqual(order.slice(-4),['revoke','tunnel-stop','listener-stop','direct-stop']);
+});
+test('an omitted privacy flag gets the privacy message, not the generic address one',async()=>{
+ const {privacyAcknowledged,...without}=input;
+ for(const value of [without,{...input,privacyAcknowledged:false}]){const {access,order}=fixture();const result=await access.startFree(value);assert.equal(result.ok,false);assert.match(result.message,/privacy notice/);assert.deepEqual(order,[]);}
 });

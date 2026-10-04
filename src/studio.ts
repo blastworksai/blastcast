@@ -1,19 +1,24 @@
-import { ScreenShare } from './screen-share.js';
+import './desktop-capture-guard.js';
+import { ScreenShare, ScreenBlockedError } from './screen-share.js';
 import { initStudioShell } from './studio-shell.js';
 import { mountRecordingLibrary } from './recording-library.js';
 import { SourceSession } from './source-session.js';
 import type { SourceStatus } from './source-protocol.js';
-import { Recording } from './recording.js';
-import { recordingRows } from './recording-status.js';
+import { Recording, RECORDING_MIME_TYPE } from './recording.js';
+import { DrawMeter, SessionDiagnosticsLog, recorderInfo } from './session-diagnostics.js';
+import { originalsWaitMessage, recordingRows } from './recording-status.js';
 import './invites.js';
 import type { FolderResult, LicenseStatus } from './bridge.js';
 import { DeviceAccess } from './device-access.js';
-import { Preview, type PreviewState } from './preview.js';
+import { Preview, deviceNoticeText, reconnectLabel, type DeviceKind, type PreviewState } from './preview.js';
+import { denialMessage } from './media-denial.js';
+import { CameraBackground, type CameraBackgroundMode } from './camera-background.js';
 import { mountSceneControls } from './scene-controls.js';
 import { CANVAS_H, CANVAS_W, DEFAULT_SCENES, type DrawableSource } from './scenes.js';
 import { HostCalls } from './host-calls.js';
 import { GuestScreenAttention } from './screen-share-attention.js';
 import { composeProgramOutput } from './program-output.js';
+import { createFrameGate, createThrottle } from './peer-call.js';
 
 let backdropOverrides: Record<string,string> = {};
 const assetCache = new Map<string, Promise<CanvasImageSource>>();
@@ -106,7 +111,9 @@ let hasCompleted = false;
 let sceneReady = false;
 let sceneError = '';
 let sceneSelection = 0;
+let sourcesStale = true; // ClaudeBWAI — set when the scene's source list must be rebuilt before the next frame
 let preparingRecording = false;
+let deviceSwaps = 0; // ClaudeBWAI — one-device switches in progress (applyDevice); Record waits for them
 let originalsOpen = false;
 let latestSources: SourceStatus | null = null;
 let importingRecovery = false;
@@ -119,6 +126,10 @@ const recording = new Recording(window.blastcast, state => {
     void library.refresh();
   }
   if (state.phase === 'starting') hasCompleted = false;
+  // ClaudeBWAI — the session diagnostics log follows the recording: samples while recording, the end line once the outcome is known.
+  if (state.phase === 'recording' && state.episodeId) sessionLog.start(state.episodeId, canvas.height === 2160 ? 2160 : 1080);
+  else if (state.phase === 'finalizing') sessionLog.pause();
+  else if (state.phase === 'complete' || state.phase === 'error') void sessionLog.stop(state.phase);
   showOriginals(latestSources);
 });
 let folderReady = false;
@@ -139,9 +150,7 @@ function status(id: string, message: string, error = false): void {
 function readiness(): void {
   const busy = recording.busy || preparingRecording || originals.busy;
   const ready = preview.state.phase === 'live' && folderReady;
-  status('preview-status', busy && preview.state.phase === 'live'
-    ? 'Camera and microphone feed the recording.' : preview.state.message,
-    preview.state.phase === 'error' || preview.state.phase === 'interrupted');
+  showPreviewStatus(busy);
   element('ready-dot').classList.toggle('ready', ready);
   element('ready-title').textContent = busy ? 'Recording session active.' : ready ? 'Your local checks are complete.' : 'Let’s get your studio ready.';
   element('ready-detail').textContent = busy ? 'Stop recording and wait for it to finish before changing devices or folders.' : ready
@@ -151,6 +160,7 @@ function readiness(): void {
   const recordReason = recording.state.phase === 'recording' ? 'A recording is already in progress.'
     : recording.state.phase === 'finalizing' ? 'Wait for the current recording to finish saving.'
     : preparingRecording || recording.state.phase === 'starting' ? 'Preparing the recording. Please wait.'
+    : deviceSwaps > 0 ? 'Switching devices. Please wait.'
     : originals.busy ? 'Wait for the current participant original to finish recording or saving.'
     : originalsOpen ? 'Finish collecting the previous recording’s originals in the Recordings tab.'
     : folderBusy ? 'Checking the recording folder. Please wait.'
@@ -160,7 +170,7 @@ function readiness(): void {
       ? `Your enabled source is not ready. ${preview.state.message}` : 'Enable a camera or microphone before recording.')
     : sceneError ? `The selected scene is not ready. ${sceneError}`
     : !sceneReady ? 'Wait for the selected scene to finish loading.' : '';
-  record.disabled = busy || originalsOpen || preparingRecording || !ready || folderBusy || !sceneReady || Boolean(sceneError);
+  record.disabled = busy || originalsOpen || preparingRecording || !ready || folderBusy || !sceneReady || Boolean(sceneError) || deviceSwaps > 0;
   const recordTrigger = element('record-trigger');
   const disabledReason = record.disabled ? recordReason : '';
   element('record-disabled-reason').textContent = disabledReason;
@@ -188,6 +198,7 @@ function readiness(): void {
   settingsChoose.disabled = choose.disabled;
   check.disabled = busy || originalsOpen || folderBusy || !folderSelected;
   open.disabled = folderBusy || !folderReady;
+  backgroundLock();
 }
 
 function clearMeter(): void {
@@ -222,33 +233,39 @@ function meter(stream: MediaStream): void {
 function renderPreview(state: PreviewState, stream: MediaStream | null): void {
   const micOff = !microphoneEnabled || preview.microphoneMuted;
   mute.setAttribute('aria-pressed', String(micOff));
-  mute.setAttribute('aria-label', micOff ? 'Enable microphone' : 'Disable microphone');
+  mute.setAttribute('aria-label', 'Mute microphone'); // ClaudeBWAI — static names; aria-pressed="true" means muted/off
   toggleCamera.setAttribute('aria-pressed', String(!cameraEnabled));
-  toggleCamera.setAttribute('aria-label', cameraEnabled ? 'Disable camera' : 'Enable camera');
-  mute.title = micOff ? 'Enable microphone' : 'Disable microphone';
-  toggleCamera.title = cameraEnabled ? 'Disable camera' : 'Enable camera';
+  toggleCamera.setAttribute('aria-label', 'Turn off camera');
+  mute.title = micOff ? 'Microphone is off. Press to turn it on.' : 'Mute microphone';
+  toggleCamera.title = cameraEnabled ? 'Turn off camera' : 'Camera is off. Press to turn it on.';
   mute.classList.add('bc-toggle'); toggleCamera.classList.add('bc-toggle');
   mute.innerHTML = '<svg class="bc-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/></svg>';
   toggleCamera.innerHTML = '<svg class="bc-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="4" width="9" height="8" rx="1.5"/><path d="M10.5 7l4-2.5v7l-4-2.5z"/></svg>';
-  element('mic-label').textContent = preview.microphoneMuted ? 'Muted' : stream ? 'Input level' : 'Mic off';
+  // ClaudeBWAI — a camera-only stream has no input level: say Mic off (it said "Input level" with the mic off).
+  element('mic-label').textContent = preview.microphoneMuted ? 'Muted' : stream?.getAudioTracks().length ? 'Input level' : 'Mic off';
   const active = state.phase === 'live' || state.phase === 'interrupted';
   start.disabled = state.phase === 'requesting';
   start.firstChild!.textContent = active ? 'Restart preview ' : state.phase === 'error' ? 'Try preview again ' : 'Start preview ';
   stop.disabled = state.phase === 'idle' || state.phase === 'error';
   stop.textContent = state.phase === 'requesting' ? 'Cancel preview' : 'Stop preview';
   camera.disabled = microphone.disabled = quality.disabled = state.phase === 'requesting';
-  if (recording.busy && (state.phase === 'error' || state.phase === 'interrupted' || state.phase === 'idle')) void recording.fail('A capture device was interrupted. Recording is incomplete; partial files are retained.');
-  status('preview-status', recording.busy && state.phase === 'live' ? 'Camera and microphone feed the recording.' : state.message, state.phase === 'error' || state.phase === 'interrupted');
+  // ClaudeBWAI — a muted track ('interrupted') no longer ends the recording: the device notice names it and Reconnect restarts it live.
+  if (recording.busy && (state.phase === 'error' || state.phase === 'idle')) void recording.fail('A capture device was interrupted. Recording is incomplete; partial files are retained.');
+  if (state.phase === 'live') hidePrivacyButton();
+  else if (state.denied) void showDenial((text, error) => status('preview-status', text, error));
+  showPreviewStatus(recording.busy);
+  renderDeviceNotices(state);
   const badge = element('preview-badge');
   badge.textContent = state.phase === 'live' ? '● Preview live' : state.phase === 'requesting' ? 'Awaiting access' : state.phase === 'interrupted' ? 'Device interrupted' : 'Devices off';
   badge.classList.toggle('live', state.phase === 'live');
-  if (attached !== stream) {
+  if (attached && stream && attached !== stream && (sameTracks(attached, stream, 'video') || sameTracks(attached, stream, 'audio'))) {
+    swapDevice(attached, stream);
+  } else if (attached !== stream) {
     clearMeter();
-    attached = stream;
+    attached = stream; sourcesStale = true;
     calls.setStream(stream ? getCallStream(stream) : null);
     if (!stream && !recording.busy) stopSceneStream();
-    originals.update(true, stream);
-    video.srcObject = stream;
+    background.setSource(stream); // ClaudeBWAI — the processed camera feeds the preview, the scene and the host original
     element('preview-empty').hidden = Boolean(stream);
     video.toggleAttribute('data-live', Boolean(stream));
     const composedCanvas = element<HTMLCanvasElement>('composed');
@@ -264,8 +281,169 @@ function renderPreview(state: PreviewState, stream: MediaStream | null): void {
   readiness();
 }
 
-const preview = new Preview(value => navigator.mediaDevices.getUserMedia(value), renderPreview);
+// ClaudeBWAI — einh 3 Oct (item 6): toggling or reconnecting ONE device replaces only that track. The other track keeps
+// feeding the preview, the scene, the mix and the calls; nothing is renegotiated and no frame is blanked.
+const trackIds = (stream: MediaStream, kind: 'audio' | 'video') => (kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks()).map(track => track.id).join(',');
+function sameTracks(a: MediaStream, b: MediaStream, kind: 'audio' | 'video'): boolean { return trackIds(a, kind) === trackIds(b, kind); }
+function swapDevice(previous: MediaStream, next: MediaStream): void {
+  const videoChanged = !sameTracks(previous, next, 'video'), audioChanged = !sameTracks(previous, next, 'audio');
+  attached = next; sourcesStale = true;
+  if (audioChanged) {
+    clearMeter();
+    if (next.getAudioTracks().length) meter(next);
+    void calls.replaceHostAudio(next).catch(() => status('device-status', 'The microphone could not reach every guest. Ask them to Reconnect.', true));
+  }
+  if (videoChanged) {
+    if (previous.getVideoTracks().length && next.getVideoTracks().length) background.swapCamera(next); else background.setSource(next);
+    const settings = next.getVideoTracks()[0]?.getSettings() ?? {};
+    element('resolution-label').textContent = next.getVideoTracks().length ? `${settings.width ?? '?'} × ${settings.height ?? '?'}` : 'Camera off';
+  } else background.replaceAudio(next);
+  void refreshDevices();
+}
+// The host original records the stream it started with; a device swapped during a take reaches it at the next take,
+// and the tracks it replaced stay open until that original has finished (stopping one would end it).
+let deferredOriginal: { stream: MediaStream | null } | null = null;
+function feedOriginal(stream: MediaStream | null): void {
+  if (originals?.busy && stream) { deferredOriginal = { stream }; return; }
+  deferredOriginal = null; originals?.update(true, stream);
+}
+function settleDeviceSwaps(): void {
+  if (originals?.busy) return;
+  if (deferredOriginal) { const { stream } = deferredOriginal; deferredOriginal = null; originals.update(true, stream); }
+  preview.releaseRetained(); // the original that still held replaced tracks has finished
+}
+function showPreviewStatus(busy: boolean): void {
+  const state = preview.state;
+  // Named device notices have their own line (with Reconnect); the status line then carries only real errors.
+  const message = state.notices?.length ? Object.values(state.errors ?? {}).join(' ')
+    : busy && state.phase === 'live' ? 'Camera and microphone feed the recording.' : state.message;
+  status('preview-status', message, Boolean(message) && (state.phase === 'error' || state.phase === 'interrupted'));
+}
+const deviceNotices = element('device-notices');
+const reconnecting = new Set<DeviceKind>();
+function renderDeviceNotices(state: PreviewState): void {
+  const notices = state.notices ?? [];
+  const signature = JSON.stringify([notices, [...reconnecting]]);
+  if (deviceNotices.dataset['signature'] === signature) return;
+  deviceNotices.dataset['signature'] = signature;
+  deviceNotices.replaceChildren(...notices.map(notice => {
+    const line = document.createElement('p'); line.className = 'device-notice status error'; line.dataset['kind'] = notice.kind;
+    const text = document.createElement('span'); text.textContent = deviceNoticeText(notice);
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary';
+    button.textContent = reconnectLabel(notice.kind); button.disabled = reconnecting.has(notice.kind);
+    button.addEventListener('click', () => void reconnectDevice(notice.kind));
+    line.append(text, button);
+    return line;
+  }));
+  deviceNotices.hidden = !notices.length;
+}
+async function reconnectDevice(kind: DeviceKind): Promise<void> {
+  if (reconnecting.has(kind)) return;
+  reconnecting.add(kind); renderDeviceNotices(preview.state);
+  try { await applyDevice(kind, true); }
+  finally { reconnecting.delete(kind); renderDeviceNotices(preview.state); }
+}
+
+// ClaudeBWAI — a denied macOS permission becomes a visible error plus an Open System Settings button.
+const privacyButton = element<HTMLButtonElement>('open-privacy-settings');
+let privacyKind: 'camera' | 'microphone' | null = null;
+function hidePrivacyButton(): void { privacyKind = null; privacyButton.hidden = true; }
+async function showDenial(show: (text: string, error: boolean) => void): Promise<void> {
+  let denial = denialMessage({ camera: 'unknown', microphone: 'unknown' });
+  try { if (typeof window.blastcast.getMediaAccessStatus === 'function') denial = denialMessage(await window.blastcast.getMediaAccessStatus()); } catch { /* generic text stays */ }
+  if (preview.state.phase === 'live') return;
+  show(denial.text, true);
+  privacyKind = denial.settings; privacyButton.hidden = !denial.settings;
+}
+privacyButton.addEventListener('click', async () => {
+  if (!privacyKind || typeof window.blastcast.openPrivacySettings !== 'function') return;
+  try { const result = await window.blastcast.openPrivacySettings(privacyKind); if (!result.ok) status('preview-status', result.message ?? 'System Settings could not open. Open it from the Apple menu.', true); }
+  catch { status('preview-status', 'System Settings could not open. Open it from the Apple menu.', true); }
+});
+
+// ClaudeBWAI — host camera background (Off / Blur / Image), the guest page's processor reused.
+const backgroundSelect = element<HTMLSelectElement>('camera-background');
+const backgroundFile = element<HTMLInputElement>('camera-background-file');
+const backgroundChange = element<HTMLButtonElement>('camera-background-change');
+const background = new CameraBackground(stream => {
+  feedOriginal(stream);
+  // ClaudeBWAI — the preview element is reloaded only when its camera track changes: a reload blanks the scene's camera.
+  const shown = video.srcObject instanceof MediaStream ? video.srcObject.getVideoTracks()[0] ?? null : null;
+  if (!stream || stream.getVideoTracks()[0] !== shown || !video.srcObject) {
+    video.srcObject = stream;
+    if (stream?.getVideoTracks().length) void video.play().catch(() => {});
+  }
+}, (message, error = false) => {
+  status('camera-background-status', message, error);
+  element('camera-background-status').classList.toggle('sr-only', !error);
+  backgroundSelect.value = background.mode;
+  backgroundChange.hidden = background.mode !== 'image';
+});
+function backgroundLock(): void {
+  const locked = recording.busy || preparingRecording || originals.busy;
+  const noVideo = !attached?.getVideoTracks().length;
+  backgroundSelect.disabled = backgroundFile.disabled = backgroundChange.disabled = locked || noVideo || deviceAccessBusy || preview.state.phase === 'requesting';
+  backgroundChange.hidden = background.mode !== 'image';
+  backgroundSelect.title = locked ? 'Background can’t change while recording.' : noVideo ? 'Turn on your camera to use a background.' : '';
+}
+// ClaudeBWAI — the main process stores the chosen image; the data URL becomes a File without fetch (CSP forbids data: fetches).
+function dataUrlToFile(dataUrl: string): File {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (!match) throw new Error('The saved background image is not readable. Choose it again.');
+  const raw = atob(match[2] ?? ''); const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return new File([bytes], 'background', { type: match[1] ?? '' });
+}
+function syncBackgroundControls(): void { backgroundSelect.value = background.mode; backgroundChange.hidden = background.mode !== 'image'; }
+const backgroundFailure = (error: unknown, fallback: string) => status('camera-background-status', error instanceof Error ? error.message : fallback, true);
+async function changeBackground(action: () => Promise<void>, fallback: string): Promise<void> {
+  const before = background.mode;
+  try { await action(); } catch (error) { backgroundFailure(error, fallback); }
+  syncBackgroundControls(); backgroundLock();
+  if (background.mode !== before) void saveDevices();
+}
+// Returns true when handled (picked or cancelled); false means fall back to the file input.
+async function chooseStoredBackground(): Promise<boolean> {
+  if (typeof window.blastcast.chooseBackgroundImage !== 'function') return false;
+  let picked: Awaited<ReturnType<Window['blastcast']['chooseBackgroundImage']>>;
+  try { picked = await window.blastcast.chooseBackgroundImage(); } catch { return false; }
+  if (!picked.ok) return Boolean(picked.cancelled);
+  const dataUrl = picked.dataUrl;
+  await changeBackground(async () => { await background.setImage(dataUrlToFile(dataUrl)); void saveDevices(); }, 'Background image could not open.');
+  return true;
+}
+async function pickBackgroundImage(): Promise<void> {
+  if (!await chooseStoredBackground()) backgroundFile.click();
+  else { syncBackgroundControls(); backgroundLock(); }
+}
+backgroundChange.addEventListener('click', () => void pickBackgroundImage());
+backgroundSelect.addEventListener('change', () => {
+  const mode = backgroundSelect.value as CameraBackgroundMode;
+  if (mode === 'image' && !background.hasImage) { backgroundSelect.value = background.mode; void pickBackgroundImage(); return; }
+  void changeBackground(() => background.setMode(mode), 'Background could not change.');
+});
+backgroundFile.addEventListener('change', () => {
+  const file = backgroundFile.files?.[0];
+  if (!file) { syncBackgroundControls(); return; }
+  void changeBackground(() => background.setImage(file), 'Background image could not open.').finally(() => { backgroundFile.value = ''; });
+});
+async function restoreBackground(mode: 'off' | 'blur' | 'image'): Promise<void> {
+  try {
+    if (mode === 'blur') await background.setMode('blur');
+    else if (mode === 'image') {
+      const stored = typeof window.blastcast.loadBackgroundImage === 'function' ? await window.blastcast.loadBackgroundImage() : null;
+      if (!stored?.ok || !stored.dataUrl) { status('camera-background-status', 'Your saved background image is missing. Choose it again.', true); void saveDevices(); }
+      else await background.setImage(dataUrlToFile(stored.dataUrl));
+    }
+  } catch (error) { backgroundFailure(error, 'Your saved background could not be restored. Choose it again.'); }
+  syncBackgroundControls(); backgroundLock();
+}
+const preview = new Preview(value => navigator.mediaDevices.getUserMedia(value), renderPreview, { deviceNotices: true });
 const calls = new HostCalls(window.blastcast, element('call-guests'), element('call-audio-status'), element<HTMLButtonElement>('enable-call-audio'));
+// ClaudeBWAI — local session diagnostics beside the recording (scene draw cost, guest video stats); no visible UI.
+const drawMeter = new DrawMeter();
+const sessionLog = new SessionDiagnosticsLog(window.blastcast, drawMeter, () => calls.diagnosticsSources(), recorderInfo(RECORDING_MIME_TYPE));
+calls.onCallEvent = (slot, state, reason) => sessionLog.event(slot, state, reason);
 const shareVideo = document.createElement('video'); shareVideo.muted=true; shareVideo.playsInline=true;
 const shareSelect = element<HTMLSelectElement>('screen-source');
 const guestScreenAttention = new GuestScreenAttention();
@@ -274,8 +452,14 @@ function showGuestScreenAttention(active: boolean): void {
   shareSelect.setAttribute('aria-describedby', active ? 'screen-share-prompt' : 'screen-status');
   element('screen-share-prompt').hidden = !active;
 }
-shareSelect.addEventListener('change', () => { guestScreenAttention.acknowledge(); showGuestScreenAttention(false); });
-const share = new ScreenShare(() => navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:15,max:30}},audio:false}), (stream,message) => {
+shareSelect.addEventListener('change', () => { sourcesStale = true; guestScreenAttention.acknowledge(); showGuestScreenAttention(false); });
+// ClaudeBWAI — the picker comes first (main arms one grant on a pick); a cancel rejects quietly, as the picker cancel did.
+const share = new ScreenShare(async () => {
+  const chosen = await window.blastcast.chooseScreen();
+  if (chosen?.blocked === true && typeof chosen.message === 'string') throw new ScreenBlockedError(chosen.message);
+  if (!chosen?.ok) throw new DOMException('Screen sharing was cancelled.', 'NotAllowedError');
+  return navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:15,max:30}},audio:false});
+}, (stream,message) => {
   shareVideo.srcObject = stream;
   if(stream) { void shareVideo.play().catch(()=>status('screen-status','Screen preview could not start.',true)); shareSelect.value='host'; }
   else shareVideo.pause();
@@ -303,8 +487,13 @@ function screenSource(): DrawableSource[] {
 function showOriginals(value: SourceStatus | null): void {
   latestSources = value;
   originalsOpen = Boolean(value && (value.closing || (value.phase !== 'closed' && !value.allSourcesComplete)));
-  const rows = element('recording-rows'); rows.replaceChildren();
-  for (const item of recordingRows(recording.state, value)) {
+  const rows = element('recording-rows');
+  // ClaudeBWAI — SourceSession polls every 500 ms; rebuild the table only when its data changed.
+  const items = recordingRows(recording.state, value);
+  const rowsSignature = JSON.stringify(items);
+  const rebuild = rows.dataset['signature'] !== rowsSignature;
+  if (rebuild) { rows.replaceChildren(); rows.dataset['signature'] = rowsSignature; }
+  for (const item of rebuild ? items : []) {
     const row = document.createElement('tr'); row.dataset.recordingId = item.id;
     row.dataset.delivery = item.delivery; row.dataset.sync = item.synchronization.state;
     const name = document.createElement('th'); name.scope = 'row'; name.textContent = item.label;
@@ -319,20 +508,12 @@ function showOriginals(value: SourceStatus | null): void {
     row.append(name, delivery, sync); rows.append(row);
   }
   const shown = value?.recovered || value?.episodeId === recording.state.episodeId ? value : null;
-  const remaining = value?.incompleteOverrideInMs;
-  const waitMessage = value?.recovered && !value.allSourcesComplete
-    ? remaining === 0 ? 'Recovered originals are incomplete. You can now explicitly finish this retained backup set.'
-      : `Recovered originals from an interrupted studio. Verified files are kept; incomplete tails need guest reimport or the timed override${remaining == null ? '.' : ` in ${Math.ceil(remaining / 60000)} min.`}`
-    : value?.phase === 'stopped' && !value.allSourcesComplete
-    ? remaining === 0 ? 'More than an hour has passed since production finished. You can now explicitly finish with missing originals.'
-      : remaining == null ? 'Keep the studio open until all originals arrive.'
-        : `Keep the studio open until all originals arrive. An override becomes available in ${Math.ceil(remaining / 60000)} min.`
-    : 'Original backup set pending. Keep the studio and guest pages open.';
+  const waitMessage = originalsWaitMessage(value);
   status('originals-status', !shown ? 'Separate originals start with Record.' : shown.allSourcesComplete
     ? 'Originals for participants present at the start are verified. Guests admitted later are not included.'
     : shown.phase === 'closed' ? 'This original backup set is incomplete. All saved media has been kept.'
     : waitMessage, shown?.phase === 'closed' && !shown.allSourcesComplete);
-  element<HTMLButtonElement>('finish-originals').disabled = !originalsOpen || recording.busy || preparingRecording || (!value?.closing && remaining !== 0);
+  element<HTMLButtonElement>('finish-originals').disabled = !originalsOpen || recording.busy || preparingRecording || (!value?.closing && !value?.canFinishIncomplete);
   element<HTMLButtonElement>('import-guest-recovery').disabled = importingRecovery || recording.busy || preparingRecording ||
     !value || value.phase !== 'stopped' || Boolean(value.closing) || value.allSourcesComplete;
   readiness();
@@ -347,7 +528,7 @@ const originals = new SourceSession(async () => {
   begin: descriptor => window.blastcast.beginHostSource(descriptor),
   append: (chunk, bytes) => window.blastcast.appendHostSource(chunk, bytes),
   finish: end => window.blastcast.finishHostSource(end),
-}, state => { status('host-source-status', state.message, state.phase === 'incomplete'); readiness(); },
+}, state => { status('host-source-status', state.message, state.phase === 'incomplete'); settleDeviceSwaps(); readiness(); },
   message => status('host-source-status', message), false, {allowPartialSource:true});
 element('finish-originals').addEventListener('click', async () => {
   try {
@@ -406,6 +587,7 @@ const deviceAccess = new DeviceAccess({
   live: () => preview.state.phase === 'live',
   busy: value => { deviceAccessBusy = value; readiness(); },
   message: (message, error) => status('device-status', message, error),
+  denied: () => void showDenial((text, error) => status('device-status', text, error)),
 });
 deviceAccess.bind(camera, 'video'); deviceAccess.bind(microphone, 'audio');
 start.addEventListener('click', () => { if (!recording.busy && !deviceAccess.busy && !preparingRecording && !originals.busy) void preview.start({ camera: camera.value, microphone: microphone.value,
@@ -418,10 +600,27 @@ async function applyDevices(): Promise<void> {
   if (!attached) { cameraEnabled = false; microphoneEnabled = false; }
   renderPreview(preview.state, attached);
 }
-toggleCamera.addEventListener('click', () => { cameraEnabled = !cameraEnabled; void applyDevices(); });
+// ClaudeBWAI — one device at a time: the toggle, the device list and Reconnect touch only their own track.
+// ClaudeBWAI — Codex review of 68ea271 (P2): while a device is being switched, Record waits (readiness), and whether the
+// replaced track is kept for a running original is decided at the swap itself, not when the acquisition started.
+async function applyDevice(kind: DeviceKind, reconnect = false): Promise<void> {
+  if (deviceAccess.busy || preview.state.phase === 'requesting') return;
+  if (!reconnect && (recording.busy || originals.busy || preparingRecording)) return;
+  if (!attached) { await applyDevices(); return; }
+  deviceSwaps++; readiness();
+  try {
+    await preview.setDevice(kind, { camera: camera.value, microphone: microphone.value, height: quality.value === '2160' ? 2160 : 1080, cameraEnabled, microphoneEnabled },
+      () => window.blastcast.authorizePreview(), { retain: () => recording.busy || preparingRecording || originals.busy, reconnect });
+  } finally { deviceSwaps--; }
+  if (!reconnect && preview.state.errors?.[kind]) { if (kind === 'camera') cameraEnabled = false; else microphoneEnabled = false; }
+  if (!attached) { cameraEnabled = false; microphoneEnabled = false; }
+  settleDeviceSwaps();
+  renderPreview(preview.state, attached);
+}
+toggleCamera.addEventListener('click', () => { cameraEnabled = !cameraEnabled; void applyDevice('camera'); });
 mute.addEventListener('click', () => {
   if (recording.busy || originals.busy) { preview.setMicrophoneMuted(!preview.microphoneMuted); return; }
-  microphoneEnabled = !microphoneEnabled; preview.setMicrophoneMuted(false); void applyDevices();
+  microphoneEnabled = !microphoneEnabled; preview.setMicrophoneMuted(false); void applyDevice('microphone');
 });
 element('hear-guests').addEventListener('click', () => {
   const button = element('hear-guests'); const enabled = button.getAttribute('aria-checked') !== 'true';
@@ -429,8 +628,9 @@ element('hear-guests').addEventListener('click', () => {
 });
 stop.addEventListener('click', () => { if (!recording.busy) preview.stop(); });
 refresh.addEventListener('click', () => void refreshDevices());
-for (const select of [camera, microphone]) select.addEventListener('change', () => { void saveDevices(); if (cameraEnabled || microphoneEnabled) void applyDevices(); });
-quality.addEventListener('change', () => { setOutputQuality(quality.value === '2160' ? 2160 : 1080); void saveDevices(); if (cameraEnabled || microphoneEnabled) void applyDevices(); });
+camera.addEventListener('change', () => { void saveDevices(); if (cameraEnabled) void applyDevice('camera'); });
+microphone.addEventListener('change', () => { void saveDevices(); if (microphoneEnabled) void applyDevice('microphone'); });
+quality.addEventListener('change', () => { setOutputQuality(quality.value === '2160' ? 2160 : 1080); void saveDevices(); if (cameraEnabled) void applyDevice('camera'); });
 navigator.mediaDevices.addEventListener('devicechange', () => void refreshDevices());
 
 function showFolder(result: FolderResult): void {
@@ -444,7 +644,7 @@ function showFolder(result: FolderResult): void {
   settingsChoose.textContent=folderSelected?'Change folder':'Choose folder';
   element('folder-label').textContent = result.status === 'ready' ? result.label : 'No writable folder selected';
   status('folder-status', result.status === 'ready'
-    ? 'Write check passed. This checks access now, not space for a full episode.' : result.message, result.status === 'error');
+    ? `Write check passed. This checks access now, not space for a full episode.${result.notice ? ` ${result.notice}` : ''}` : result.message, result.status === 'error');
 }
 async function folderAction(action: () => Promise<FolderResult>): Promise<void> {
   if (folderBusy) return;
@@ -474,7 +674,7 @@ const controls = mountSceneControls({
   container: controlsContainer,
   resolveAsset,
   customBackdrop: id => Boolean(backdropOverrides[id]),
-  onSceneSelected: scene => { element('preview-heading').textContent=scene.label; sceneSelection++; sceneReady = false; sceneError = ''; status('scene-status', 'Loading selected scene…'); readiness(); },
+  onSceneSelected: scene => { sourcesStale = true; element('preview-heading').textContent=scene.label; sceneSelection++; sceneReady = false; sceneError = ''; status('scene-status', 'Loading selected scene…'); readiness(); },
 });
 
 function stopSceneStream() {
@@ -490,23 +690,46 @@ function setOutputQuality(height: 1080 | 2160): void {
     stopSceneStream();
     canvas.width = width;
     canvas.height = height;
+    // ClaudeBWAI — Codex review of 68ea271 (P2): the guests' program video was the scene track just stopped; hand every call
+    // the new one (replaceTrack on the video sender, no renegotiation). A one-device change no longer rebuilds the calls.
+    if (attached) {
+      sceneStream = canvas.captureStream(30);
+      void calls.replaceProgramVideo(sceneStream.getVideoTracks()[0] ?? null).catch(() => status('device-status', 'The new quality could not reach every guest. Ask them to Reconnect.', true));
+    }
   }
   element('output-label').textContent = `Recording output ${width}×${height}`;
 }
 
-async function renderLoop() {
-  const gen = ++renderGeneration;
-  const selection = sceneSelection;
-  let hasValidFrame = false;
-  if (sceneError) { renderAnimationId = requestAnimationFrame(() => void renderLoop()); return; }
-
+// ClaudeBWAI — the canvas is captured at 30 fps, so drawing faster than 30 fps only burns the CPU.
+const RENDER_FPS = 30, SOURCE_REFRESH_MS = 250, STATUS_REFRESH_MS = 500;
+const renderGate = createFrameGate(RENDER_FPS);
+let frameValid = false;
+let statusSelection = -1;
+let sourceSignature = '';
+const drawableIds = new WeakMap<object, number>();
+let nextDrawableId = 0;
+const drawableId = (drawable: object): number => {
+  let id = drawableIds.get(drawable);
+  if (id === undefined) { id = ++nextDrawableId; drawableIds.set(drawable, id); }
+  return id;
+};
+function scheduleRender(): void {
+  renderAnimationId = requestAnimationFrame(now => {
+    if (!renderGate(now)) { scheduleRender(); return; }
+    void renderLoop();
+  });
+}
+// Source assembly touches the DOM (screen picker, attention banner, scene thumbnails), so it runs at ~4 Hz
+// and hands the scene controls a new list only when something they draw or show actually changed.
+const refreshSources = createThrottle(() => {
+  let own: DrawableSource[] = [];
+  frameValid = false;
   if (attached && attached.active) {
     const track = attached.getVideoTracks()[0];
     const settings = track?.getSettings();
     const live = track?.readyState === 'live' && track?.enabled && !track.muted && video.videoWidth > 0 && video.videoHeight > 0;
-
-    hasValidFrame = Boolean(live || attached.getAudioTracks().some(track => track.readyState === 'live'));
-    const sources: DrawableSource[] = [{
+    frameValid = Boolean(live || attached.getAudioTracks().some(track => track.readyState === 'live'));
+    own = [{
       kind: 'camera',
       index: 0,
       state: live ? 'live' : 'muted',
@@ -514,20 +737,34 @@ async function renderLoop() {
       naturalWidth: video.videoWidth || settings?.width || 0,
       naturalHeight: video.videoHeight || settings?.height || 0
     }];
-    controls.updateSources([...sources, ...calls.sources(), ...screenSource()]);
-  } else {
-    controls.updateSources([...calls.sources(), ...screenSource()]);
   }
+  const all = [...own, ...calls.sources(), ...screenSource()];
+  const signature = all.map(source => `${source.kind}:${source.index}:${source.state}:${source.naturalWidth}x${source.naturalHeight}:${drawableId(source.drawable as object)}`).join('|');
+  if (signature !== sourceSignature) { sourceSignature = signature; controls.updateSources(all); }
+}, SOURCE_REFRESH_MS);
+const refreshSceneStatus = createThrottle(() => {
+  status('scene-status', 'Scene changes appear in the recording. Select a shared screen for a screen-share scene.');
+  readiness();
+}, STATUS_REFRESH_MS);
+
+async function renderLoop() {
+  const gen = ++renderGeneration;
+  const selection = sceneSelection;
+  if (sceneError) { scheduleRender(); return; }
+
+  refreshSources(sourcesStale); sourcesStale = false;
+  const hasValidFrame = frameValid;
 
   try {
     ctx.save();
     ctx.setTransform(canvas.width / CANVAS_W, 0, 0, canvas.height / CANVAS_H, 0, 0);
+    const drawStart = performance.now();
     try { await controls.composeToCanvas(ctx); }
-    finally { ctx.restore(); }
+    finally { ctx.restore(); drawMeter.add(performance.now() - drawStart); }
     if (gen === renderGeneration && selection === sceneSelection) {
-      sceneReady = hasValidFrame;
-      status('scene-status', 'Scene changes appear in the recording. Select a shared screen for a screen-share scene.');
-      readiness();
+      const changed = sceneReady !== hasValidFrame || statusSelection !== selection;
+      sceneReady = hasValidFrame; statusSelection = selection;
+      refreshSceneStatus(changed);
     }
   } catch (err) {
     if (gen === renderGeneration && selection === sceneSelection) {
@@ -539,9 +776,7 @@ async function renderLoop() {
     }
   }
 
-  if (gen === renderGeneration) {
-    renderAnimationId = requestAnimationFrame(() => void renderLoop());
-  }
+  if (gen === renderGeneration) scheduleRender();
 }
 
 void renderLoop();
@@ -562,7 +797,7 @@ function getSceneOutputStream(audioStream: MediaStream): MediaStream {
 }
 
 record.addEventListener('click', async () => {
-  if (!attached || !folderReady || !sceneReady || preparingRecording || recording.busy || originalsOpen || originals.busy) return;
+  if (!attached || !folderReady || !sceneReady || preparingRecording || recording.busy || originalsOpen || originals.busy || deviceSwaps > 0) return;
   const stream = attached;
   preparingRecording = true; readiness();
   try {
@@ -594,7 +829,7 @@ showOriginals(latestSources);
 void refreshDevices();
 
 async function saveDevices(): Promise<void> {
-  const result = await window.blastcast.saveDevicePreferences({camera:camera.value,microphone:microphone.value,height:quality.value === '2160' ? 2160 : 1080});
+  const result = await window.blastcast.saveDevicePreferences({camera:camera.value,microphone:microphone.value,height:quality.value === '2160' ? 2160 : 1080,background:background.mode});
   if (!result.ok) status('device-status', result.message ?? 'Device selections could not be saved.', true);
 }
 void window.blastcast.loadDevicePreferences().then(async result => {
@@ -607,6 +842,7 @@ void window.blastcast.loadDevicePreferences().then(async result => {
   }
   quality.value = String(prefs.height);
   setOutputQuality(prefs.height);
+  await restoreBackground(prefs.background ?? 'off');
 }).catch(() => status('device-status', 'Saved devices could not be loaded. Choose your devices again.', true));
 
 // CodexBWAI — every layout owns its upload; selection never depends on the active scene.

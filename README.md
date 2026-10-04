@@ -42,18 +42,49 @@ Activation keys are signed for offline verification. Official builds contain
 the public verification key only; the private signing key is not included in
 this repository or in the application package.
 
-## Current build
+## Install
 
-BlastCast 0.2.3 is available for:
+BlastCast 0.2.3 is available for Windows, macOS and Linux.
 
-- [Windows x64](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-windows-x64.exe)
-- [macOS Apple Silicon](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-macos-arm64.pkg)
-- [Linux amd64](https://github.com/blastworksai/blastcast/releases/download/v0.2.3/BlastCast-0.2.3-linux-amd64.deb)
+### macOS (Apple Silicon)
 
-These early builds are not publisher-signed. Windows may show an
-unknown-publisher warning, macOS may require you to approve the app in Privacy
-& Security, and the Debian package is unsigned. Verify downloads against the
-`SHA256SUMS.txt` file attached to the release.
+Download [BlastCast-0.2.3-macos-arm64.pkg](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-macos-arm64.pkg)
+and open it. The package is signed with a Developer ID and notarized by Apple,
+so it installs without a Gatekeeper warning. On first use, macOS asks for
+camera and microphone access.
+
+### Windows (x64)
+
+Download [BlastCast-0.2.3-windows-x64.exe](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-windows-x64.exe)
+and run it. The Windows installer is not publisher-signed yet, so Windows may
+show an unknown-publisher warning. To upgrade, uninstall the previous version
+first, with BlastCast closed; your activation, settings and recordings are kept.
+
+### Linux (Debian, Ubuntu and derivatives, amd64)
+
+Install from the signed BlastCast package feed, so `apt` keeps it up to date:
+
+```sh
+curl -fsSL https://github.com/blastworksai/blastcast/releases/latest/download/blastcast-archive-keyring.gpg | sudo tee /usr/share/keyrings/blastcast-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/blastcast-archive-keyring.gpg] https://github.com/blastworksai/blastcast/releases/latest/download/ ./" | sudo tee /etc/apt/sources.list.d/blastcast.list
+sudo apt update && sudo apt install blastcast
+```
+
+The feed is signed with the Blastworks.ai key, fingerprint
+`0228 CC4C A5A0 866D 6EB6  EFDF D503 A8AE 60F9 BD33`; `apt` refuses the
+package if the signature does not match. You can also download
+[BlastCast-0.2.3-linux-amd64.deb](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-linux-amd64.deb)
+directly and install it with `sudo apt install ./BlastCast-0.2.3-linux-amd64.deb`.
+
+### Verify a download
+
+Every release carries `SHA256SUMS.txt` and its GPG signature `SHA256SUMS.txt.asc`. In the folder with your download:
+
+```sh
+curl -fsSLO https://github.com/blastworksai/blastcast/releases/latest/download/blastcast-archive-keyring.gpg
+gpgv --keyring ./blastcast-archive-keyring.gpg SHA256SUMS.txt.asc SHA256SUMS.txt
+sha256sum --check --ignore-missing SHA256SUMS.txt
+```
 
 ## Source and licence
 
@@ -68,8 +99,9 @@ activation keys, or other private data in public issues or pull requests.
 
 ## Project status
 
-BlastCast is under active development. Publisher signing, notarization, and
-additional architectures are still in progress.
+BlastCast is under active development. The macOS package is signed and
+notarized and the Linux package and checksums are GPG-signed; Windows publisher
+signing and additional architectures are still in progress.
 
 ---
 

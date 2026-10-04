@@ -19,3 +19,7 @@ await mkdir('dist/bodypix', { recursive: true });
 for (const name of ['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt']) {
   await copyFile(`assets/bodypix/${name}`, `dist/bodypix/${name}`);
 }
+
+// ClaudeBWAI — desktop (CommonJS) reads the shared source limits from the compiled TS module, never a copy.
+const limits = await import('../dist/source-limits.js');
+await writeFile('dist/source-limits.json', `${JSON.stringify(limits, null, 2)}\n`);

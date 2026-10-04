@@ -30,16 +30,17 @@ test('lost durable chunk and final acknowledgements retry exactly; only matching
  const ack=await f.outbox.finish(end);
  assert.equal(ack.bytes,3);assert.equal(appends,2);assert.equal(finishes,2);assert.equal(f.store.removed,true);assert.equal(f.progress.at(-1).acknowledgedBytes,3);assert.deepEqual(f.failures,[]);
 });
-test('mismatched receipt is permanent and preserves pending bytes',async()=>{
- const f=fixture({append:async c=>({ok:true,...c,sha256:'b'.repeat(64)})});
- await f.outbox.open(descriptor);await f.outbox.append(chunk,new ArrayBuffer(3));
- await until(()=>f.failures.length>0);assert.equal(f.store.chunks.size,1);assert.equal(f.store.record.ackedBytes,0);assert.equal(f.store.removed,false);
-});
-test('permanent rejection does not spin; transient retry delays are capped',async()=>{
+test('mismatched receipt keeps pending bytes and keeps retrying; the recording is never stopped',async()=>{
  let attempts=0;
- const f=fixture({begin:async()=>{attempts++;if(attempts<=6)throw new SourceTransportError('temporary',true);return {ok:false,message:'closed'};}});
- await f.outbox.open(descriptor);await until(()=>f.failures.length>0);
- assert.equal(attempts,7);assert.equal(Math.max(...f.sleeps),5000);assert.equal(f.store.removed,false);
+ const f=fixture({append:async c=>++attempts<3?{ok:true,...c,sha256:'b'.repeat(64)}:{ok:true,...c}});
+ await f.outbox.open(descriptor);await f.outbox.append(chunk,new ArrayBuffer(3));
+ await until(()=>f.store.record.acked===1);assert.ok(attempts>=3);assert.deepEqual(f.failures,[]);f.outbox.cancel();
+});
+test('host rejection does not stop delivery or spin; transient retry delays are capped',async()=>{
+ let attempts=0;
+ const f=fixture({begin:async d=>{attempts++;if(attempts<=6)throw new SourceTransportError('temporary',true);if(attempts===7)return {ok:false,message:'closed'};return {ok:true,...d};}});
+ await f.outbox.open(descriptor);await until(()=>attempts>=8);
+ assert.equal(Math.max(...f.sleeps.slice(0,6)),5000);assert.deepEqual(f.failures,[]);assert.equal(f.store.removed,false);f.outbox.cancel();
 });
 test('serialized uploads reserve pacing before every attempt including lost acknowledgements',async()=>{
  let active=0,max=0;
@@ -55,4 +56,39 @@ test('cancellation during request keeps data despite late receipt',async()=>{
  const f=fixture({append:c=>new Promise(r=>{resolve=()=>r({ok:true,...c});})});
  await f.outbox.open(descriptor);await f.outbox.append(chunk,new ArrayBuffer(3));await until(()=>resolve);
  f.outbox.cancel();resolve();await tick();assert.equal(f.store.chunks.size,1);assert.equal(f.store.record.ackedBytes,0);
+});
+
+// Minimal in-memory IndexedDB stand-in: an explicit tx.abort() fires onabort with tx.error left null, as the real one does.
+function fakeIndexedDB() {
+  const data = { records: new Map(), chunks: new Map(), budget: new Map() };
+  const key = k => JSON.stringify(k);
+  const db = { createObjectStore() {}, close() {}, transaction() {
+    const tx = { error: null, aborted: false, pending: 0 };
+    const settle = () => setTimeout(() => { if (!tx.aborted && tx.pending === 0 && !tx.done) { tx.done = true; tx.oncomplete?.(); } }, 0);
+    const req = fn => { const r = {}; tx.pending++; setTimeout(() => { if (!tx.aborted) { r.result = fn(); r.onsuccess?.(); } tx.pending--; settle(); }, 0); return r; };
+    tx.objectStore = name => { const m = data[name]; return {
+      get: k => req(() => m.get(key(k))), count: () => req(() => m.size),
+      add: (v, k) => req(() => { m.set(key(k), v); }), put: (v, k) => req(() => { m.set(key(k), v); }), delete: k => req(() => { m.delete(key(k)); }),
+      getAll: () => req(() => [...m.values()]) }; };
+    tx.abort = () => { tx.aborted = true; tx.done = true; setTimeout(() => tx.onabort?.(), 0); };
+    settle();
+    return tx;
+  } };
+  return { open() { const r = {}; setTimeout(() => { r.result = db; r.onupgradeneeded?.(); r.onsuccess?.(); }, 0); return r; } };
+}
+test('an explicit storage refusal names its own reason, not the generic failure', async () => {
+  const { IndexedSourceQueue } = await import('../dist/source-outbox.js');
+  const saved = { idb: globalThis.indexedDB, nav: Object.getOwnPropertyDescriptor(globalThis, 'navigator') };
+  globalThis.indexedDB = fakeIndexedDB();
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { request: (_n, _o, fn) => fn() } } });
+  try {
+    const queue = new IndexedSourceQueue('t', 4);
+    await queue.create(descriptor);
+    await assert.rejects(queue.append({ ...chunk, byteLength: 8 }, new ArrayBuffer(8)), /4-byte budget/);
+    await assert.rejects(queue.append({ ...chunk, sequence: 3, byteLength: 2 }, new ArrayBuffer(2)), /out of order/);
+    await queue.close();
+  } finally {
+    globalThis.indexedDB = saved.idb;
+    if (saved.nav) Object.defineProperty(globalThis, 'navigator', saved.nav); else delete globalThis.navigator;
+  }
 });

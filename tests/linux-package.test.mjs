@@ -1,3 +1,4 @@
+// ClaudeBWAI — hicolor icon sizes asserted in the package listing.
 // CodexBWAI — package fixtures inspect real dpkg metadata; no system installation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -5,7 +6,7 @@ import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { assembleDebRoot, buildDeb, REQUIRED_APP_FILES } from '../packaging/linux/package.mjs';
+import { assembleDebRoot, buildDeb, REQUIRED_APP_FILES, ICON_SIZES } from '../packaging/linux/package.mjs';
 async function fixture(t) {
   const base=await fs.mkdtemp(path.join(os.tmpdir(),'blastcast-deb-test-')); t.after(()=>fs.rm(base,{recursive:true,force:true}));
   const app=path.join(base,'app'),runtime=path.join(base,'runtime'),root=path.join(base,'root');
@@ -22,6 +23,8 @@ test('Debian artifact has application, notices, menu, root-owned sandbox and no 
   const listing=spawnSync('dpkg-deb',['--contents',artifact],{encoding:'utf8'}).stdout;
   assert.match(listing,/-rwsr-xr-x root\/root .*opt\/blastcast\/chrome-sandbox/);
   for(const p of ['resources/app/desktop/relay-config.cjs','LICENSES.chromium.html','usr/share/applications/blastcast.desktop','usr/bin/blastcast']) assert.ok(listing.includes(p));
+  for(const n of ICON_SIZES) assert.ok(listing.includes(`usr/share/icons/hicolor/${n}x${n}/apps/blastcast.png`),`hicolor ${n}`);
+  assert.ok(!listing.includes('scalable'));
   assert.deepEqual(await fs.readdir(path.join(f.root,'DEBIAN')),['control']);
   assert.equal(await fs.readFile(path.join(f.root,'usr/bin/blastcast'),'utf8'),'#!/bin/sh\nexec /opt/blastcast/blastcast "$@"\n');
   const pkg=JSON.parse(await fs.readFile(path.join(f.root,'opt/blastcast/resources/app/package.json'))); assert.equal(pkg.devDependencies,undefined);
@@ -45,3 +48,5 @@ test('Unpinned runtime archive cannot create a distribution',async t=>{
   const f=await fixture(t),archive=path.join(f.base,'fake.zip'),output=path.join(f.base,'out'); await fs.writeFile(archive,'bad');
   await assert.rejects(buildDeb({app:f.app,archive,output}),/Unapproved Electron archive/); await assert.rejects(fs.stat(output),/ENOENT/);
 });
+
+test('the pinned localhost.run host key file is a required app file',()=>{ assert.ok(REQUIRED_APP_FILES.includes('assets/localhost-run-known-hosts.txt')); });

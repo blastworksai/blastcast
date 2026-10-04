@@ -1,7 +1,8 @@
 // CodexBWAI — delivery and synchronization have separate evidence and separate states.
 import type { RecordingState } from './recording.js';
 import type { SourceStatus, SourceSummary } from './source-protocol.js';
-import { SYNCHRONIZATION_LIMIT_MS } from './synchronization.js';
+// Moved from the removed src/synchronization.ts; the assessor lives in experiments/bcast-7-sync/.
+export const SYNCHRONIZATION_LIMIT_MS = 40;
 
 export type DeliveryState = 'not_started' | 'recording' | 'transferring' | 'finalizing' | 'saved' | 'verified' | 'incomplete' | 'failed';
 export type RecordingRow = {
@@ -45,4 +46,18 @@ export function recordingRows(mixed: RecordingState, originals: SourceStatus | n
     rows.push(row(`original:${source.participantId}`, source.label, 'Participant original', delivery, detail));
   }
   return rows;
+}
+
+// ClaudeBWAI — the originals wait line follows closePolicy (canFinishIncomplete), so it never promises an hour
+// while Finish with missing originals is already available.
+export function originalsWaitMessage(value: SourceStatus | null): string {
+  if (value?.recovered && !value.allSourcesComplete)
+    return 'Recovered originals from an interrupted studio. Guests can no longer reconnect to them. Verified files are kept; press Finish with missing originals to keep the partial files as incomplete and record again.';
+  if (value?.phase !== 'stopped' || value.allSourcesComplete) return 'Original backup set pending. Keep the studio and guest pages open.';
+  if (value.canFinishIncomplete) return value.finishReason === 'overdue'
+    ? 'More than an hour has passed since production finished. You can now explicitly finish with missing originals.'
+    : 'No guest is still sending an original. You can finish with missing originals now.';
+  const remaining = value.incompleteOverrideInMs;
+  return remaining == null || remaining === 0 ? 'Keep the studio open while connected guests send their originals.'
+    : `Keep the studio open while connected guests send their originals. Finish with missing originals unlocks when they stop sending, or in ${Math.ceil(remaining / 60000)} min.`;
 }

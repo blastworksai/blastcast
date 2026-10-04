@@ -3,18 +3,19 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { writeAll } = require('./webm.cjs');
+const LIMITS = require('./source-limits.cjs');
 
 const MAGIC = Buffer.from('BLASTCASTRECOV1\n');
-const MAX_MANIFEST = 1024 * 1024, MAX_META = 1024, MAX_PIECE = 64 * 1024;
-const MAX_RETAINED = 2 * 1024 ** 3, MAX_FILE = MAX_RETAINED + 64 * 1024 ** 2;
-const MAX_SOURCE = 16 * 1024 ** 3, MAX_EPISODE = 128 * 1024 ** 3, MAX_CHUNKS = 100000, JOURNAL_SIZE = 512;
+const MAX_MANIFEST = 1024 * 1024, MAX_META = 1024, MAX_PIECE = LIMITS.PIECE;
+const MAX_RETAINED = LIMITS.RETAINED, MAX_FILE = MAX_RETAINED + 64 * 1024 ** 2;
+const MAX_SOURCE = LIMITS.SOURCE, MAX_EPISODE = LIMITS.EPISODE, MAX_CHUNKS = LIMITS.CHUNKS, JOURNAL_SIZE = 512;
 const TOP = ['version','participantId','recoveryKey','episodeId','epochs'];
 const EPOCH = ['descriptor','acked','next','ackedBytes','bytes','end','retainedChunks','retainedBytes'];
 const DESCRIPTOR = ['episodeId','epochId','mimeType','startedMonoMs','hostStartedMs','clockUncertaintyMs','width','height'];
 const END = ['episodeId','epochId','chunkCount','endedMonoMs'];
-const CHUNK = ['episodeId','epochId','sequence','byteLength','sha256','startMonoMs','endMonoMs'];
+const CHUNK = LIMITS.CHUNK_KEYS;
 const JOURNAL = ['sequence','byteLength','sha256','startMonoMs','endMonoMs'];
-const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+const uuid = value => typeof value === 'string' && LIMITS.UUID.test(value);
 const participant = value => typeof value === 'string' && /^[A-Za-z0-9_-]{22}$/.test(value);
 const key = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
 const integer = (value,min,max) => Number.isSafeInteger(value) && value >= min && value <= max;
@@ -46,7 +47,7 @@ async function hashFile(io,file) {
 function validateDescriptor(value, episodeId) {
   if (!exact(value,DESCRIPTOR) || value.episodeId !== episodeId || !uuid(value.epochId) ||
     value.mimeType !== 'video/webm;codecs=vp8,opus' || !time(value.startedMonoMs) || !time(value.hostStartedMs) ||
-    !time(value.clockUncertaintyMs) || !integer(value.width,0,3840) || !integer(value.height,0,2160)) invalid();
+    !time(value.clockUncertaintyMs) || !integer(value.width,0,3840) || !integer(value.height,0,3840) || Math.min(value.width,value.height) > 2160) invalid();
 }
 function validateManifest(value) {
   if (!exact(value,TOP) || value.version !== 1 || !participant(value.participantId) || !key(value.recoveryKey) ||

@@ -108,11 +108,16 @@ test('call configuration is admitted-only, scoped to the route, and absent from 
   assert.equal(guests.callConfiguration(pending.sessionId).ok, false);
   assert.equal((await request(port, '/api/call/config', { token: pending.token })).status, 410);
 
-  const expiring = await openSession(guests, port, 'Bob');
-  assert.equal(guests.admit(expiring.sessionId).ok, true);
+  // ClaudeBWAI — einh 2 Oct ("Guests that connect via a link expire the token"): once admitted, the link's
+  // 30-minute doorway timer no longer ends the guest's call; revoking still does.
+  const admitted = await openSession(guests, port, 'Bob');
+  assert.equal(guests.admit(admitted.sessionId).ok, true);
   nowMs += INVITE_TTL_MS + 1;
-  assert.equal(guests.callConfiguration(expiring.sessionId).ok, false);
-  assert.equal((await request(port, '/api/call/config', { token: expiring.token })).status, 410);
+  assert.equal(guests.callConfiguration(admitted.sessionId).iceServers[0].urls[0], relayUrl);
+  assert.equal((await request(port, '/api/call/config', { token: admitted.token })).status, 200);
+  guests.revoke();
+  assert.equal(guests.callConfiguration(admitted.sessionId).ok, false);
+  assert.equal((await request(port, '/api/call/config', { token: admitted.token })).status, 410);
 });
 
 test('invalid helper keeps the active route; reconfigure and stop revoke old allocation access', async t => {

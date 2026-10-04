@@ -28,6 +28,15 @@ export type SourceSummary = { participantId: string; label: string; phase: Sourc
   bytes: number; message?: string };
 export type SourceStatus = { episodeId: string; hostNowMs: number; phase: 'recording' | 'stopped' | 'closed'; closing?: boolean;
   recovered?: boolean; incompleteOverrideInMs?: number | null;
+  /** ClaudeBWAI — closePolicy says nobody can still deliver (or the hour passed, or recovered): Finish with missing originals is available. */
+  canFinishIncomplete?: boolean; finishReason?: string;
   sources: SourceSummary[]; allSourcesComplete: boolean };
 export type SourceControl = { ok: true; episode: { episodeId: string; phase: 'recording' | 'stopped' | 'closed';
   participantId: string; hostNowMs: number; eligible: boolean; recoveryKey?: string } | null; source: SourceSummary | null };
+
+// ClaudeBWAI — old iPhones (iOS < 18.4) cannot record WebM. Such a guest still joins; their original is never started and the host records them from the call.
+export const ORIGINALS_UNSUPPORTED_GUEST_NOTICE = "Your browser can't record a local copy, so the host records you from the call. You can still join.";
+export const ORIGINALS_UNSUPPORTED_HOST_LABEL = "No local copy (browser can't record)";
+export function originalsSupported(recorder: { isTypeSupported?: (mime: string) => boolean } | undefined | null): boolean {
+  try { return typeof recorder?.isTypeSupported === 'function' && recorder.isTypeSupported(SOURCE_MIME) === true; } catch { return false; }
+}

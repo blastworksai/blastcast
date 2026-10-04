@@ -35,7 +35,10 @@ function createSignalingBroker(store) {
     }
     if (msg.type === 'screen') return keys.length === 2 && typeof msg.active === 'boolean';
     if (msg.type === 'description') {
-      if (!('description' in msg) || keys.some(key => !['type', 'description', 'screenMid'].includes(key))) return false;
+      if (!('description' in msg) || keys.some(key => !['type', 'description', 'screenMid', 'iceRestart', 'generation'].includes(key))) return false;
+      // ClaudeBWAI — ICE restart: a re-offer on the live call, numbered so the guest's answer can be matched to it.
+      if ('iceRestart' in msg && msg.iceRestart !== true) return false;
+      if ('generation' in msg && (!Number.isSafeInteger(msg.generation) || msg.generation < 1 || msg.generation > 1000)) return false;
       if ('screenMid' in msg && (typeof msg.screenMid !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(msg.screenMid))) return false;
       if (!msg.description || typeof msg.description !== 'object' || Array.isArray(msg.description)) return false;
       const descKeys = Object.keys(msg.description);
@@ -78,7 +81,9 @@ function createSignalingBroker(store) {
     if (!state) return { ok: false, message: 'Session is not admitted.' };
     
     if (message.type === 'description' && message.description.type === 'offer') {
-      if (state.callId === callId) return { ok: false, message: 'Call already offered. Use a new callId to reconnect.' };
+      // ClaudeBWAI — an ICE-restart offer is the one repeat offer a call accepts; the queues and cursors carry on.
+      if (state.callId === callId && message.iceRestart !== true) return { ok: false, message: 'Call already offered. Use a new callId to reconnect.' };
+      if (message.iceRestart === true && state.callId !== callId) return { ok: false, message: 'Stale callId.' };
       if (state.callId !== callId) {
         state.callId = callId;
         state.hostQueue = [];

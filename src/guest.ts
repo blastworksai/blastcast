@@ -4,9 +4,12 @@ import { Preview } from './preview.js';
 import { SourceTransportError } from './source-outbox.js';
 import { SourceSession } from './source-session.js';
 import { recoveryFilename, type SourceRecoveryWriter } from './source-recovery.js';
+import { ORIGINALS_UNSUPPORTED_GUEST_NOTICE, originalsSupported } from './source-protocol.js';
 import type { SourceChunk, SourceChunkAck, SourceControl, SourceBeginAck, SourceFinishAck } from './source-protocol.js';
 import { ScreenShare, showScreen } from './screen-share.js';
 import { GuestCall } from './guest-call.js';
+import { timeoutSignal, WakeLockManager, isMobileDevice, isPhoneUserAgent } from './guest-platform.js';
+import { resolveInvite, forgetInvite } from './guest-invite.js';
 import { CameraBackground, type CameraBackgroundMode } from './camera-background.js';
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const video = el<HTMLVideoElement>('guest-preview');
@@ -17,8 +20,18 @@ const backgroundFile = el<HTMLInputElement>('guest-background-file');
 const consent = el<HTMLInputElement>('guest-consent');
 const name = el<HTMLInputElement>('guest-name');
 const join = el<HTMLButtonElement>('guest-join');
-const token = /^#invite=([A-Za-z0-9_-]{43})$/.exec(location.hash)?.[1] ?? '';
-history.replaceState(null, '', location.pathname); // Bearer credential never enters an HTTP URL or storage.
+const tabStore = (): Storage | null => { try { return sessionStorage; } catch { return null; } };
+const diskStore = (): Storage | null => { try { return localStorage; } catch { return null; } };
+const token = resolveInvite(location.hash, tabStore());
+// Bearer credential never enters an HTTP URL. It lives in this tab's sessionStorage until the tab closes (so a refresh keeps working),
+// never in the URL or localStorage, and is forgotten on Leave and on a 410.
+// ClaudeBWAI — the page then lives at /guest, not /: a later invitation link (https://host/#invite=…) differs by path,
+// so opening it in this same tab always loads a fresh page (fresh media state) instead of a same-document hash change
+// that keeps this page, or the tunnel's 502 page after a host restart, on screen.
+history.replaceState(null, '', '/guest');
+window.addEventListener('hashchange', () => { if (/^#invite=[A-Za-z0-9_-]{43}$/.test(location.hash)) location.reload(); });
+// The pagehide teardown below is final; a page restored from the back-forward cache starts again instead of sitting dead.
+window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 let valid = false, pending = false, joining = false, terminal = false, admitted = false, checking = false;
 let sessionCredential = '';
 let attached: MediaStream | null = null;
@@ -29,15 +42,71 @@ let deviceAccessBusy = false;
 let originals: SourceSession;
 let share: ScreenShare | undefined;
 const requestId = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '';
-const redemptionKey = (() => {
+function randomKey(): string {
   const b = new Uint8Array(32);
   crypto.getRandomValues(b);
   return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-})();
+}
+// The redemption key (and the typed name) outlive a reload so the SAME browser can rejoin.
+// The storage key is derived from a SHA-256 of the invite token, never the raw token.
+// Safari private mode and blocked storage throw, so every access is wrapped with an in-memory fallback.
+const memoryStore = new Map<string, string>();
+function storeGet(key: string): string | null {
+  try { const value = localStorage.getItem(key); if (value !== null) return value; } catch { /* fall back to memory */ }
+  return memoryStore.get(key) ?? null;
+}
+function storeSet(key: string, value: string): void {
+  memoryStore.set(key, value);
+  try { localStorage.setItem(key, value); } catch { /* memory only */ }
+}
+let storagePrefix = '';
+async function storagePrefixFor(invite: string): Promise<string> {
+  try {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(invite)));
+    return `blastcast.guest.${[...digest].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  } catch { return ''; }
+}
+let redemptionKey = '';
+async function loadRedemptionKey(): Promise<string> {
+  storagePrefix = await storagePrefixFor(token);
+  if (storagePrefix) {
+    const stored = storeGet(`${storagePrefix}.key`);
+    if (stored && /^[A-Za-z0-9_-]{43}$/.test(stored)) {
+      const savedName = storeGet(`${storagePrefix}.name`);
+      if (savedName && !name.value) { name.value = savedName.slice(0, 80); buttons(); }
+      return stored;
+    }
+  }
+  const fresh = randomKey();
+  if (storagePrefix) storeSet(`${storagePrefix}.key`, fresh);
+  return fresh;
+}
 
 function status(id: string, message: string, error = false): void { el(id).textContent = message; el(id).classList.toggle('error', error); }
+const wakeLock = new WakeLockManager({ navigator, document });
+const pausedNotice = el('guest-paused-notice');
+let pausedWhileRecording = false, pausedNoticeSawBusy = false;
+function syncPlatform(inCall: boolean): void {
+  wakeLock.setWanted(inCall || Boolean(originals?.busy));
+  if (!pausedNotice.hidden) {
+    if (originals?.busy) pausedNoticeSawBusy = true;
+    else if (pausedNoticeSawBusy) pausedNotice.hidden = true;
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { if (originals?.busy) pausedWhileRecording = true; return; }
+  if (pausedWhileRecording) {
+    pausedWhileRecording = false; pausedNotice.hidden = false; pausedNoticeSawBusy = Boolean(originals?.busy);
+    pausedNotice.textContent = 'Your phone paused this page. Check your recording status below.';
+  }
+});
+const mobileGuest = isMobileDevice({ matchMedia: window.matchMedia?.bind(window), navigator });
+el('guest-mobile-notice').hidden = !mobileGuest;
+// Codex r8 round 2: only a phone user agent is a phone for codec and cap; a touch-screen desktop is not.
+const phoneGuest = isPhoneUserAgent(navigator.userAgent);
 function buttons(): void {
   const inCall = admitted && valid && !terminal;
+  syncPlatform(inCall);
   document.body.classList.toggle('in-call', inCall);
   el('guest-host-panel').hidden = !inCall;
   if ((!inCall || !attached) && (share?.stream || share?.busy)) share.stop();
@@ -82,7 +151,7 @@ function meter(stream: MediaStream): void {
 function publishOutgoing(stream: MediaStream | null): void {
   outgoing = stream; video.srcObject = stream; el('guest-preview-empty').hidden = Boolean(stream);
   call.update(valid && admitted && !terminal, stream);
-  originals.update(valid && admitted && !terminal, stream);
+  originals.update(originalsOk && valid && admitted && !terminal, stream);
   if (stream) void video.play().catch(() => { if (outgoing === stream) preview.stop('Preview could not display. Ask to join again.'); });
 }
 const background = new CameraBackground(publishOutgoing, (message, error = false) => {
@@ -108,7 +177,7 @@ const preview = new Preview(c => navigator.mediaDevices.getUserMedia(c), (state,
 const call = new GuestCall(api, el<HTMLVideoElement>('guest-host'), el('guest-call-status'), el<HTMLButtonElement>('guest-play-audio'), stream => {
   el('guest-screen-panel').hidden = !stream;
   showScreen(el<HTMLVideoElement>('guest-screen'), stream);
-});
+}, phoneGuest);
 share = new ScreenShare(() => navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }), (stream, message) => {
   status('guest-screen-status', message);
   void call.setScreen(stream).catch(() => {
@@ -134,18 +203,21 @@ backgroundFile.addEventListener('change', () => {
     backgroundSelect.value = background.mode; backgroundFile.value = ''; buttons();
   });
 });
+// ClaudeBWAI — detected up front: iOS < 18.4 has no WebM recorder.
+const originalsOk = originalsSupported(typeof MediaRecorder === 'undefined' ? null : MediaRecorder);
+if (!originalsOk) status('guest-original-status', ORIGINALS_UNSUPPORTED_GUEST_NOTICE);
 originals = new SourceSession(() => api<SourceControl>('source/status'), {
   begin: descriptor => api<SourceBeginAck>('source/begin', descriptor),
   append: uploadOriginal,
   finish: end => api<SourceFinishAck>('source/finish', end, 120000),
 }, state => { status('guest-original-status', state.message, state.phase === 'incomplete'); buttons(); },
-  message => { status('guest-original-status', message); buttons(); }, true);
+  message => { status('guest-original-status', message); buttons(); }, true, { uplink: () => call.uplink() });
 
 async function uploadOriginal(chunk: SourceChunk, bytes: ArrayBuffer): Promise<SourceChunkAck> {
   const response = await hostFetch('/api/source/chunk', { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
     headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${sessionCredential}`, 'X-Blastcast-Source': JSON.stringify(chunk) },
-    body: bytes, signal: AbortSignal.timeout(30000) });
-  if (!response.ok) throw new SourceTransportError('The host could not confirm this original chunk.', transientStatus(response.status));
+    body: bytes, signal: timeoutSignal(30000) });
+  if (!response.ok) throw new SourceTransportError('The host could not confirm this original chunk.', transientStatus(response.status), response.status === 410);
   return await hostJson<SourceChunkAck>(response);
 }
 
@@ -189,18 +261,18 @@ type Reply = { ok: true; phase: string; expiresAt: number; sessionCredential?: s
 async function api<T = Reply>(endpoint: string, body: object = {}, timeoutMs = 5000): Promise<T> {
   const auth = endpoint === 'redeem' ? token : sessionCredential;
   const response = await hostFetch(`/api/${endpoint}`, { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` }, body: JSON.stringify(body), signal: timeoutSignal(timeoutMs) });
   if (!response.ok) {
     if (response.status === 429) {
       throw new SourceTransportError('429', true); // special handling for rate limit
     }
     const error = await response.json().catch(() => ({})) as { message?: string };
     if (response.status === 410) {
-      terminal = true; valid = false; preview.stop();
+      terminal = true; valid = false; preview.stop(); forgetInvite(tabStore(), diskStore(), storagePrefix);
       const reason = error.message ?? 'This invitation is closed.';
       status('invitation-status', `${reason} Your devices are off. Ask the host for a new link.`, true);
     }
-    throw new SourceTransportError(error.message ?? 'The host could not accept the request.', transientStatus(response.status));
+    throw new SourceTransportError(error.message ?? 'The host could not accept the request.', transientStatus(response.status), response.status === 410);
   }
   return await hostJson<T>(response);
 }
@@ -209,6 +281,7 @@ async function check(): Promise<void> {
   checking = true;
   try {
     if (!sessionCredential) {
+      if (!redemptionKey) redemptionKey = await loadRedemptionKey();
       const result = await api('redeem', { redemptionKey });
       if (terminal) return;
       sessionCredential = result.sessionCredential!;
@@ -219,7 +292,12 @@ async function check(): Promise<void> {
     pending = result.phase === 'pending';
     admitted = result.phase === 'admitted';
     call.update(admitted, outgoing);
-    originals.update(admitted && valid && !terminal, outgoing);
+    originals.update(originalsOk && admitted && valid && !terminal, outgoing);
+    if (!originalsOk && admitted) {
+      status('guest-original-status', ORIGINALS_UNSUPPORTED_GUEST_NOTICE);
+      // Tell the host no original will come, so Record, Finish and Close never wait for this guest.
+      void api('source/status', { originalsUnsupported: true }).catch(() => {});
+    }
     
     let info = 'Invitation ready. Preview stays on this device.';
     if (result.phase === 'pending') info = 'Your request is waiting with the host. You are not admitted or being recorded.';
@@ -298,7 +376,8 @@ join.addEventListener('click', async () => {
         return;
       }
     }
-    await api('join', { name: name.value.trim(), consent: consent.checked, consentVersion: '1' });
+    await api('join', { name: name.value.trim(), consent: consent.checked, consentVersion: '1', ...(phoneGuest ? { device: 'phone' } : {}) });
+    if (storagePrefix) storeSet(`${storagePrefix}.name`, name.value.trim());
     if (!terminal) { pending = true; status('guest-join-status', 'Recording consent sent. Waiting for host admission; you are not being recorded.'); }
   } catch (error) { 
     if (error instanceof Error && error.message === '429') status('guest-join-status', 'Host is busy. Try again shortly.', true);
@@ -308,15 +387,22 @@ join.addEventListener('click', async () => {
 });
 el('guest-leave').addEventListener('click', () => {
   terminal = true; valid = false; deviceAccess.cancel(); preview.stop(); buttons();
+  const leaving = api('leave'); forgetInvite(tabStore(), diskStore(), storagePrefix);
   status('invitation-status', 'You left this invitation. Your devices are off.');
-  void api('leave').catch(() => status('guest-join-status', 'Devices are off. The host could not confirm withdrawal; ask them to close your invitation.', true));
+  void leaving.catch(() => status('guest-join-status', 'Devices are off. The host could not confirm withdrawal; ask them to close your invitation.', true));
 });
 window.addEventListener('beforeunload', event => { if (originals.busy || originals.canSaveRecovery) { event.preventDefault(); event.returnValue = ''; } });
-window.addEventListener('pagehide', () => { share?.stop(); deviceAccess.cancel(); terminal = true; valid = false; preview.stop(); background.close(); call.close(); originals.close(); });
+// ClaudeBWAI — einh 4 Oct (r10): tell the host the page is closing so it shows Disconnected at once instead of waiting out call recovery.
+// One shot, pagehide only. The credential goes in the BODY (sendBeacon cannot set Authorization; never in the URL). Forgets nothing.
+function announcePageGone(): void {
+  if (!admitted || terminal || !sessionCredential || typeof navigator.sendBeacon !== 'function') return;
+  try { navigator.sendBeacon('/api/page-gone', new Blob([JSON.stringify({ session: sessionCredential })], { type: 'application/json' })); } catch { /* best effort */ }
+}
+window.addEventListener('pagehide', () => { announcePageGone(); share?.stop(); deviceAccess.cancel(); terminal = true; valid = false; preview.stop(); background.close(); call.close(); originals.close(); });
 if (!isSecureContext || location.protocol !== 'https:') {
   terminal = true; status('invitation-status', 'A secure HTTPS invitation is required. Ask the host for their secure link; do not bypass certificate warnings.', true);
 } else if (!navigator.mediaDevices?.getUserMedia || !requestId) {
-  terminal = true; status('invitation-status', 'This browser cannot preview devices. Open the invitation in a current desktop Chrome or Edge browser and allow camera and microphone access.', true);
+  terminal = true; status('invitation-status', 'This browser cannot preview devices. Open the invitation in a current browser (Chrome, Edge, Safari or Firefox) and allow camera and microphone access.', true);
 } else if (!token) {
   terminal = true; status('invitation-status', 'The invitation is missing. Open the full private link from the host again.', true);
 } else {

@@ -67,6 +67,25 @@ export class CameraBackground {
     else void this.startProcessed(this.generation);
   }
 
+  // ClaudeBWAI — one device changed while the other keeps running (studio Mic/Camera toggle, Reconnect).
+  /** A microphone change: the camera processing keeps running; the new audio is published beside the same video. */
+  replaceAudio(stream: MediaStream): void {
+    this.raw = stream;
+    if (this.mode !== 'off' && this.ownedTrack?.readyState === 'live') this.publish(new MediaStream([this.ownedTrack, ...stream.getAudioTracks()]));
+    else if (this.mode === 'off' || !this.ownedTrack) this.publish(stream);
+  }
+  /** A camera restart: an effect already running keeps its output track and only reads the new camera, so whatever
+   * records that track (the host original) is not ended. Anything else is an ordinary setSource. */
+  swapCamera(stream: MediaStream): void {
+    if (this.raw && this.mode !== 'off' && this.ownedTrack?.readyState === 'live' && stream.getVideoTracks().length) {
+      this.raw = stream;
+      this.input.srcObject = stream; void this.input.play().catch(() => {});
+      this.publish(new MediaStream([this.ownedTrack, ...stream.getAudioTracks()]));
+      return;
+    }
+    this.setSource(stream);
+  }
+
   async setMode(mode: CameraBackgroundMode): Promise<void> {
     if (!['off', 'blur', 'image'].includes(mode)) throw new Error('Unsupported background mode');
     if (mode === 'image' && !this.image) throw new Error('Choose a background image first.');
@@ -125,7 +144,7 @@ export class CameraBackground {
     const processed = this.canvas.captureStream(Math.min(30, settings.frameRate ?? 30));
     this.ownedTrack = processed.getVideoTracks()[0] ?? null;
     if (!this.ownedTrack) return this.fail('Background effects could not create a camera track.');
-    this.publish(new MediaStream([this.ownedTrack, ...raw.getAudioTracks()]));
+    this.publish(new MediaStream([this.ownedTrack, ...(this.raw ?? raw).getAudioTracks()]));
     this.message('Loading the offline background processor…');
     try {
       await this.input.play();
@@ -138,7 +157,8 @@ export class CameraBackground {
       this.inference.width = Math.max(1, Math.round(this.input.videoWidth * scale));
       this.inference.height = Math.max(1, Math.round(this.input.videoHeight * scale));
       const model = await loadModel();
-      if (generation !== this.generation || raw !== this.raw) return;
+      // ClaudeBWAI — replaceAudio/swapCamera change raw without a new generation; this run carries on with them.
+      if (generation !== this.generation || !this.raw?.getVideoTracks().length) return;
       this.message('Offline background processor ready. Finishing the first frame…');
       this.paint(generation, context);
       void this.segment(generation, model);

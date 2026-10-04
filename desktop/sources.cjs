@@ -6,15 +6,16 @@ const { randomUUID, randomBytes, createHash } = require('node:crypto');
 const { finalizeWebm, writeAll } = require('./webm.cjs');
 const { recoverLatestSourceEpisode } = require('./source-recovery.cjs');
 const { stageRecoveryImport } = require('./source-import.cjs');
-const MAX_CHUNK = 8 * 1024 * 1024, MAX_PARTICIPANT = 16 * 1024 ** 3, MAX_EPISODE = 128 * 1024 ** 3;
-const JOURNAL_SIZE = 512, MAX_CHUNKS = 100000;
+const LIMITS = require('./source-limits.cjs');
+const MAX_CHUNK = 8 * 1024 * 1024, MAX_PARTICIPANT = LIMITS.SOURCE, MAX_EPISODE = LIMITS.EPISODE;
+const JOURNAL_SIZE = 512, MAX_CHUNKS = LIMITS.CHUNKS;
 // CodexBWAI — expected interruption/missing media is not an observed disk failure.
 const INCOMPLETE = Symbol('incomplete source');
 const DESCRIPTOR = ['episodeId','epochId','mimeType','startedMonoMs','hostStartedMs','clockUncertaintyMs','width','height'];
-const CHUNK = ['episodeId','epochId','sequence','byteLength','sha256','startMonoMs','endMonoMs'];
+const CHUNK = LIMITS.CHUNK_KEYS;
 const END = ['episodeId','epochId','chunkCount','endedMonoMs'];
 const bad = message => ({ ok: false, message });
-const uuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v);
+const uuid = v => typeof v === 'string' && LIMITS.UUID.test(v);
 const participant = v => v === 'host' || (typeof v === 'string' && /^[A-Za-z0-9_-]{22}$/.test(v));
 const time = v => Number.isFinite(v) && v >= 0 && v <= Number.MAX_SAFE_INTEGER;
 const integer = (v, min, max) => Number.isSafeInteger(v) && v >= min && v <= max;
@@ -43,7 +44,10 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
       else if (epochs.length && epochs.every(e => e.phase === 'complete')) phase = 'complete';
       const failed = ep.metadataError || p.failed || p.epochs.some(id => ep.epochs.get(id).failed);
       return { participantId: p.id, label: p.label, phase, failed, epochs, bytes: p.bytes,
-        ...(phase === 'incomplete' ? { message: ep.metadataError ? 'Original metadata could not be saved. Media is retained.' : 'This original is incomplete. Saved partial media is retained.' } : {}) };
+        // ClaudeBWAI — time since this source last proved it could deliver (begin/chunk/finish). Not persisted.
+        ...(!persisted ? { idleMs: typeof p.lastActive === 'number' ? Math.max(0, performance.now() - p.lastActive) : null } : {}),
+        ...(!persisted && p.damaged ? { damaged:true, damageReason:p.damaged } : {}),
+        ...(phase === 'incomplete' ? { message: p.damaged ? `Part of this original could not be verified (${p.damaged}). Verified media is retained and unverified files were left unchanged.` : ep.metadataError ? 'Original metadata could not be saved. Media is retained.' : 'This original is incomplete. Saved partial media is retained.' } : {}) };
     });
     return { episodeId: ep.id, hostNowMs: performance.now(), phase: ep.phase, closing: ep.closing && !ep.closedReady,
       ...(ep.recovered ? { recovered:true } : {}), sources,
@@ -110,7 +114,7 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
       for (const p of input.participants) {
         if (!shape(p,['id','label']) || !participant(p.id) || roster.has(p.id) || typeof p.label !== 'string' || !p.label.trim() || p.label.length > 80 || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(p.label)) return Promise.resolve(bad('Invalid participant roster.'));
         const recoveryKey = p.id === 'host' ? null : randomBytes(32).toString('base64url');
-        roster.set(p.id, { id:p.id,label:p.label,epochs:[],bytes:0,reserved:0,incomplete:false,recoveryKey,
+        roster.set(p.id, { id:p.id,label:p.label,epochs:[],bytes:0,reserved:0,incomplete:false,recoveryKey,lastActive:performance.now(),
           recoveryHash:recoveryKey ? createHash('sha256').update(recoveryKey).digest('hex') : null });
       }
       if (!roster.has('host')) return Promise.resolve(bad('The source roster must include the host.'));
@@ -132,9 +136,10 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
     },
     beginSource(participantId, input) {
       if (!shape(input, DESCRIPTOR) || !uuid(input.episodeId) || !uuid(input.epochId) || input.mimeType !== 'video/webm;codecs=vp8,opus' ||
-        !time(input.startedMonoMs) || !time(input.hostStartedMs) || !time(input.clockUncertaintyMs) || !integer(input.width,0,3840) || !integer(input.height,0,2160)) return Promise.resolve(bad('Invalid source descriptor.'));
+        !time(input.startedMonoMs) || !time(input.hostStartedMs) || !time(input.clockUncertaintyMs) || !integer(input.width,0,3840) || !integer(input.height,0,3840) || Math.max(input.width,input.height) > 3840 || Math.min(input.width,input.height) > 2160) return Promise.resolve(bad('Invalid source descriptor.')); // orientation-neutral: portrait passes the landscape limits
       const ep = episode, p = ep?.participants.get(participantId);
-      if (!ep || !current(ep) || importing || ep.id !== input.episodeId || ep.phase === 'closed' || !p) return Promise.resolve(bad('No active source episode for this participant.'));
+      if (!ep || ep.id !== input.episodeId || ep.phase === 'closed' || !p) return Promise.resolve({ ...bad('No active source episode for this participant.'), gone:true });
+      if (!current(ep) || importing) return Promise.resolve(bad('No active source episode for this participant.'));
       const existing = ep.epochs.get(input.epochId);
       if (existing) return Promise.resolve(existing.ready && existing.participantId === participantId && equal(existing.descriptor,input,DESCRIPTOR)
         ? { ok:true,episodeId:ep.id,epochId:existing.id } : bad('Conflicting or pending source epoch.'));
@@ -152,7 +157,7 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
           if (!current(ep)) throw INCOMPLETE;
           e.phase = 'recording'; await persist(ep);
           if (!current(ep)) throw INCOMPLETE;
-          e.ready = true; return { ok:true,episodeId:ep.id,epochId:e.id };
+          e.ready = true; ep.participants.get(participantId).lastActive = performance.now(); return { ok:true,episodeId:ep.id,epochId:e.id };
         } catch (error) { await markFailure(ep,e,error !== INCOMPLETE); return bad('Original source could not start. Partial files are retained.'); }
         finally { e.busy = false; }
       });
@@ -163,7 +168,11 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
         !integer(input.byteLength,1,MAX_CHUNK) || !(bytes instanceof ArrayBuffer) || bytes.byteLength !== input.byteLength ||
         typeof input.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(input.sha256) || !time(input.startMonoMs) || !time(input.endMonoMs) || input.endMonoMs < input.startMonoMs) return Promise.resolve(bad('Invalid original chunk.'));
       const ep = episode, e = ep?.epochs.get(input.epochId), p = ep?.participants.get(participantId);
-      if (!ep || !current(ep) || importing || ep.id !== input.episodeId || !e || !e.ready || e.participantId !== participantId || e.busy || !p) return Promise.resolve(bad('Original source is unavailable or busy.'));
+      const unavailable = 'Original source is unavailable or busy.';
+      // gone: the episode, guest or epoch can never accept this chunk (guest gets 410). busy: a write is settling, retry shortly.
+      if (!ep || ep.id !== input.episodeId || !p || ep.phase === 'closed' || !e || e.participantId !== participantId) return Promise.resolve({ ...bad(unavailable), gone:true });
+      if (e.busy) return Promise.resolve({ ...bad(unavailable), busy:true });
+      if (!current(ep) || importing || !e.ready) return Promise.resolve(bad(unavailable));
       // Copy before hashing and asynchronous I/O; a caller cannot mutate an acknowledged buffer.
       const data = Buffer.from(new Uint8Array(bytes));
       if (createHash('sha256').update(data).digest('hex') !== input.sha256) return Promise.resolve(bad('Original chunk checksum does not match.'));
@@ -193,7 +202,7 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
             await writeAll(e.mediaHandle,data);
             await writeAll(e.journalHandle,Buffer.from(record.padEnd(JOURNAL_SIZE-1,' ')+'\n'));
             await e.mediaHandle.sync(); await e.journalHandle.sync();
-            e.sequence++; e.bytes += data.length; e.lastEnd = meta.endMonoMs; p.bytes += data.length; ep.bytes += data.length;
+            e.sequence++; e.bytes += data.length; e.lastEnd = meta.endMonoMs; p.lastActive = performance.now(); p.bytes += data.length; ep.bytes += data.length;
           }
           if (!current(ep)) throw INCOMPLETE;
           return { ok:true,episodeId:ep.id,epochId:e.id,sequence:meta.sequence,sha256:meta.sha256,byteLength:meta.byteLength };
@@ -224,6 +233,7 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
           e.name = name; e.phase = 'complete'; e.completionPending = true; await persist(ep);
           if (!current(ep)) throw INCOMPLETE;
           e.completionPending = false;
+          ep.participants.get(participantId).lastActive = performance.now();
           return { ok:true,episodeId:ep.id,epochId:e.id,name,bytes:e.bytes };
         } catch (error) { await markFailure(ep,e,error !== INCOMPLETE); return bad('Original could not be finalized. All saved media and metadata are retained.'); }
         finally { e.busy = false; }
@@ -291,8 +301,12 @@ function createSourceStore({ folder, io: supplied = fs, finalize = finalizeWebm 
       if (!selected) return bad('Choose a recording folder first.');
       episode = null; recoveryError = null; recovering = true;
       try {
-        episode = await recoverLatestSourceEpisode({ folder:selected, io });
-        return episode ? { ok:true, recovered:true, episodeId:episode.id } : { ok:true, recovered:false };
+        const found = await recoverLatestSourceEpisode({ folder:selected, io });
+        episode = found.episode;
+        // ClaudeBWAI — einh 4 Oct: note a damaged earlier recording, keep recording.
+        const damaged = found.damagedEpisodes.length ? { damagedEpisodes:found.damagedEpisodes,
+          notices:found.damagedEpisodes.map(d => `One earlier recording could not be read; its files were left untouched in ${d.directory}.`) } : {};
+        return episode ? { ok:true, recovered:true, episodeId:episode.id, ...damaged } : { ok:true, recovered:false, ...damaged };
       } catch {
         recoveryError = 'Interrupted originals could not be verified. Existing files were left unchanged.';
         return bad(recoveryError);

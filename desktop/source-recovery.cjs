@@ -2,18 +2,19 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const LIMITS = require('./source-limits.cjs');
 
 const MAX_METADATA = 1024 * 1024;
 const MAX_CHUNK = 8 * 1024 * 1024;
-const MAX_PARTICIPANT = 16 * 1024 ** 3;
-const MAX_EPISODE = 128 * 1024 ** 3;
-const MAX_CHUNKS = 100000;
+const MAX_PARTICIPANT = LIMITS.SOURCE;
+const MAX_EPISODE = LIMITS.EPISODE;
+const MAX_CHUNKS = LIMITS.CHUNKS;
 const JOURNAL_SIZE = 512;
 const TOP = ['version','id','hostStartedMs','hostTimeOriginMs','phase','participants','sources','descriptors'];
 const DESCRIPTOR_V1 = ['episodeId','epochId','mimeType','startedMonoMs','hostStartedMs','clockUncertaintyMs','width','height','participantId','endedMonoMs'];
 const DESCRIPTOR_V2 = [...DESCRIPTOR_V1,'storageId'];
 const JOURNAL = ['sequence','byteLength','sha256','startMonoMs','endMonoMs'];
-const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+const uuid = value => typeof value === 'string' && LIMITS.UUID.test(value);
 const participantId = value => value === 'host' || (typeof value === 'string' && /^[A-Za-z0-9_-]{22}$/.test(value));
 const time = value => Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
@@ -73,7 +74,7 @@ async function readMetadata(io, candidate) {
     const keys = metadata.version === 1 ? DESCRIPTOR_V1 : DESCRIPTOR_V2;
     if (!exact(descriptor,keys) || descriptor.episodeId !== metadata.id || !uuid(descriptor.epochId) || descriptors.has(descriptor.epochId) ||
       !participants.has(descriptor.participantId) || descriptor.mimeType !== 'video/webm;codecs=vp8,opus' || !time(descriptor.startedMonoMs) ||
-      !time(descriptor.hostStartedMs) || !time(descriptor.clockUncertaintyMs) || !integer(descriptor.width,0,3840) || !integer(descriptor.height,0,2160) ||
+      !time(descriptor.hostStartedMs) || !time(descriptor.clockUncertaintyMs) || !integer(descriptor.width,0,3840) || !integer(descriptor.height,0,3840) || Math.min(descriptor.width,descriptor.height) > 2160 ||
       !(descriptor.endedMonoMs === null || time(descriptor.endedMonoMs)) ||
       (metadata.version === 2 && !(descriptor.storageId === null || uuid(descriptor.storageId)))) invalid();
     if (metadata.version === 1) descriptor.storageId = null;
@@ -85,83 +86,103 @@ async function readMetadata(io, candidate) {
   return { metadata, participants, summaries, descriptors };
 }
 
+// ClaudeBWAI — a record is either good, a torn/garbled one (null + reason) or a hard I/O failure (throws).
 async function readRecord(handle, sequence) {
   const buffer = Buffer.alloc(JOURNAL_SIZE); let offset = 0;
   while (offset < JOURNAL_SIZE) {
     const result = await handle.read(buffer,offset,JOURNAL_SIZE-offset,sequence*JOURNAL_SIZE+offset);
-    if (!result.bytesRead) invalid();
+    if (!result.bytesRead) return { bad:'journal record is short' };
     offset += result.bytesRead;
   }
   let record;
-  try { record = JSON.parse(buffer.toString('utf8').trim()); } catch { invalid(); }
+  try { record = JSON.parse(buffer.toString('utf8').trim()); } catch { return { bad:'journal record is unreadable' }; }
   if (!exact(record,JOURNAL) || record.sequence !== sequence || !integer(record.byteLength,1,MAX_CHUNK) ||
     typeof record.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(record.sha256) || !time(record.startMonoMs) ||
-    !time(record.endMonoMs) || record.endMonoMs < record.startMonoMs) invalid();
-  return record;
+    !time(record.endMonoMs) || record.endMonoMs < record.startMonoMs) return { bad:'journal record is invalid' };
+  return { record };
 }
 
+// Reads every verifiable record from the front of the journal and stops at the first one that is not.
+// Nothing on disk is ever written or truncated: a torn tail is trimmed in memory only.
+// `damage` is set when verified data was lost mid-journal or the metadata claims more than could be verified.
 async function reconcileEpoch(io, directory, descriptor, claimed) {
   const suffix = descriptor.storageId ? `.reimport-${descriptor.storageId}` : '';
   const base = path.join(directory,`${descriptor.participantId}-${descriptor.epochId}${suffix}`);
   const mediaPath = `${base}.webm.partial`, journalPath = `${base}.journal`;
   const mediaStat = await regular(io,mediaPath,MAX_PARTICIPANT + MAX_CHUNK);
   const journalStat = await regular(io,journalPath,MAX_CHUNKS*JOURNAL_SIZE);
-  if (journalStat.size % JOURNAL_SIZE !== 0) invalid();
-  const count = journalStat.size / JOURNAL_SIZE;
-  let journalHandle, mediaHandle, bytes = 0, lastEnd = descriptor.startedMonoMs;
+  const total = Math.floor(journalStat.size / JOURNAL_SIZE);
+  let journalHandle, mediaHandle, bytes = 0, lastEnd = descriptor.startedMonoMs, count = 0, damage = null;
   try {
     journalHandle = await io.open(journalPath,'r'); mediaHandle = await io.open(mediaPath,'r');
-    for (let sequence=0; sequence<count; sequence++) {
-      const record = await readRecord(journalHandle,sequence);
-      if (record.startMonoMs < descriptor.startedMonoMs || record.startMonoMs < lastEnd || bytes + record.byteLength > MAX_PARTICIPANT) invalid();
-      const data = Buffer.alloc(record.byteLength); let offset = 0;
+    for (let sequence=0; sequence<total; sequence++) {
+      const { record, bad } = await readRecord(journalHandle,sequence);
+      const last = sequence === total - 1;
+      if (bad) { if (!last) damage = bad; break; } // a bad FINAL record is a torn tail: trimmed, not damage
+      if (record.startMonoMs < descriptor.startedMonoMs || record.startMonoMs < lastEnd || bytes + record.byteLength > MAX_PARTICIPANT) { damage = 'journal record is out of order'; break; }
+      const data = Buffer.alloc(record.byteLength); let offset = 0, short = false;
       while (offset < data.length) {
         const result = await mediaHandle.read(data,offset,data.length-offset,bytes+offset);
-        if (!result.bytesRead) invalid();
+        if (!result.bytesRead) { short = true; break; }
         offset += result.bytesRead;
       }
-      if (createHash('sha256').update(data).digest('hex') !== record.sha256) invalid();
-      bytes += record.byteLength; lastEnd = record.endMonoMs;
+      if (short) { damage = 'media is shorter than its journal'; break; }
+      if (createHash('sha256').update(data).digest('hex') !== record.sha256) { damage = 'media does not match its journal'; break; }
+      bytes += record.byteLength; lastEnd = record.endMonoMs; count++;
     }
   } finally {
     if (journalHandle) await journalHandle.close();
     if (mediaHandle) await mediaHandle.close();
   }
-  if (claimed.bytes > bytes || claimed.chunks > count) invalid();
+  if (!damage && (claimed.bytes > bytes || claimed.chunks > count)) damage = 'journal is shorter than the saved metadata claims';
   const tail = mediaStat.size !== bytes;
-  let complete = claimed.phase === 'complete' && claimed.bytes === bytes && claimed.chunks === count && !tail &&
+  let complete = !damage && claimed.phase === 'complete' && claimed.bytes === bytes && claimed.chunks === count && !tail &&
     descriptor.endedMonoMs !== null && descriptor.endedMonoMs >= lastEnd && claimed.name === `${descriptor.epochId}.webm`;
   if (complete) {
     try { const stat = await regular(io,path.join(directory,claimed.name)); if (!stat.size) complete = false; }
     catch { complete = false; }
   }
+  return { epoch: epochState(descriptor,{ mediaPath,journalPath,count,bytes,lastEnd,complete,name:claimed.name }), damage };
+}
+
+function epochState(descriptor, { mediaPath, journalPath, count, bytes, lastEnd, complete, name }) {
   const cleanDescriptor = Object.fromEntries(['episodeId','epochId','mimeType','startedMonoMs','hostStartedMs','clockUncertaintyMs','width','height']
     .map(key => [key,descriptor[key]]));
   return { id:descriptor.epochId, participantId:descriptor.participantId, descriptor:cleanDescriptor, storageId:descriptor.storageId, mediaPath, journalPath,
     mediaHandle:null, journalHandle:null, phase:complete?'complete':'incomplete', failed:false, ready:true, busy:false,
     sequence:count, bytes, lastEnd, pending:null,
     end:complete ? { episodeId:descriptor.episodeId, epochId:descriptor.epochId, chunkCount:count, endedMonoMs:descriptor.endedMonoMs } : null,
-    ...(complete ? { name:claimed.name } : {}) };
+    ...(complete ? { name } : {}) };
 }
 
 async function reconcile(io, candidate, parsed) {
   const { metadata, participants, summaries, descriptors } = parsed;
   const recoveredParticipants = new Map(), epochs = new Map();
   for (const [id,identity] of participants) recoveredParticipants.set(id,{ id,label:identity.label,recoveryHash:identity.recoveryHash,
-    recoveryKey:null,epochs:[],bytes:0,reserved:0,incomplete:false,failed:summaries.get(id).source.failed });
+    recoveryKey:null,epochs:[],bytes:0,reserved:0,incomplete:false,failed:summaries.get(id).source.failed,damaged:null });
   let total = 0;
   for (const descriptor of descriptors.values()) {
     const claimed = summaries.get(descriptor.participantId).epochs.get(descriptor.epochId);
-    const epoch = await reconcileEpoch(io,candidate.directory,descriptor,claimed);
     const participant = recoveredParticipants.get(descriptor.participantId);
+    let epoch, damage = null;
+    try { ({ epoch, damage } = await reconcileEpoch(io,candidate.directory,descriptor,claimed)); }
+    catch {
+      // One participant's unrecoverable files must not drop the others: keep an empty, incomplete placeholder.
+      const base = path.join(candidate.directory,`${descriptor.participantId}-${descriptor.epochId}${descriptor.storageId ? `.reimport-${descriptor.storageId}` : ''}`);
+      epoch = epochState(descriptor,{ mediaPath:`${base}.webm.partial`,journalPath:`${base}.journal`,count:0,bytes:0,lastEnd:descriptor.startedMonoMs,complete:false });
+      damage = 'original files are missing or unreadable';
+    }
+    if (damage) participant.damaged = participant.damaged || damage;
     participant.epochs.push(epoch.id); participant.bytes += epoch.bytes; total += epoch.bytes;
-    if (participant.bytes > MAX_PARTICIPANT || total > MAX_EPISODE) invalid();
+    if (total > MAX_EPISODE) invalid();
+    if (participant.bytes > MAX_PARTICIPANT) participant.damaged = participant.damaged || 'original exceeds the size limit';
     if (epoch.phase !== 'complete') participant.incomplete = true;
     epochs.set(epoch.id,epoch);
   }
   for (const participant of recoveredParticipants.values()) {
     if (!participant.epochs.length) participant.incomplete = true;
-    if (summaries.get(participant.id).source.bytes > participant.bytes) invalid();
+    if (summaries.get(participant.id).source.bytes > participant.bytes) participant.damaged = participant.damaged || 'journal is shorter than the saved metadata claims';
+    if (participant.damaged) participant.incomplete = true;
   }
   return { id:metadata.id, directory:candidate.directory, participants:recoveredParticipants, epochs,
     phase:'stopped', recovered:true, ready:true, closing:false, closedReady:false, closeWork:null,
@@ -173,7 +194,7 @@ async function recoverLatestSourceEpisode({ folder, io: supplied = fs }) {
   const entries = await io.readdir(folder,{withFileTypes:true});
   const candidates = [];
   for (const entry of entries) {
-    const match = /^sources-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(entry.name);
+    const match = new RegExp(`^sources-(${LIMITS.UUID_PATTERN})$`).exec(entry.name);
     if (!match) continue;
     const directory = path.join(folder,entry.name), stat = await io.lstat(directory);
     if (!entry.isDirectory() || stat.isSymbolicLink() || !stat.isDirectory()) invalid();
@@ -182,12 +203,18 @@ async function recoverLatestSourceEpisode({ folder, io: supplied = fs }) {
     candidates.push({ id:match[1], directory, order });
   }
   candidates.sort((a,b) => b.order-a.order || b.id.localeCompare(a.id));
+  // ClaudeBWAI — an unreadable or hostile episode is noted and skipped, as if closed. Nothing on disk is touched
+  // and its ids never build a path (readMetadata validates before any participant/storage path exists).
+  const damagedEpisodes = [];
   for (const candidate of candidates) {
-    const parsed = await readMetadata(io,candidate);
+    let parsed;
+    try { parsed = await readMetadata(io,candidate); }
+    catch (error) { damagedEpisodes.push({ name:path.basename(candidate.directory), directory:candidate.directory, reason:error?.message || 'metadata could not be read' }); continue; }
     if (parsed.metadata.phase === 'closed') continue;
-    return reconcile(io,candidate,parsed);
+    try { return { episode: await reconcile(io,candidate,parsed), damagedEpisodes }; }
+    catch (error) { damagedEpisodes.push({ name:path.basename(candidate.directory), directory:candidate.directory, reason:error?.message || 'episode could not be reconciled' }); continue; }
   }
-  return null;
+  return { episode:null, damagedEpisodes };
 }
 
 module.exports = { recoverLatestSourceEpisode };

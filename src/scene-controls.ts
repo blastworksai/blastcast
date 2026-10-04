@@ -112,7 +112,7 @@ export function mountSceneControls(options: SceneControlsOptions): SceneControls
         const slot = slots.find(slot=>slot.kind===shape.dataset.kind && slot.index===Number(shape.dataset.index));
         shape.hidden = !slot;
         if(slot) {shape.style.left=`${slot.rect.x/1920*100}%`;shape.style.top=`${slot.rect.y/1080*100}%`;shape.style.width=`${slot.rect.w/1920*100}%`;shape.style.height=`${slot.rect.h/1080*100}%`;}
-        shape.classList.toggle('is-filled', sources.some(source => source.kind === shape.dataset.kind && source.index === Number(shape.dataset.index) && source.state === 'live'));
+        shape.classList.toggle('is-filled', sources.some(source => source.kind === shape.dataset.kind && source.index === Number(shape.dataset.index) && (source.state === 'live' || source.state === 'reconnecting')));
       }
     }
   }

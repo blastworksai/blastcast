@@ -268,8 +268,8 @@ describe('expired/revoked host decisions (issue 3)', () => {
     const r2 = store.admitGuest(sessionId);
     assert.ok(r2.ok);
     assert.ok(r2.idempotent);
-    // Now expire
-    now.advance(INVITE_TTL_MS + 1);
+    // Revoked invitations still refuse (the TTL no longer applies once admitted).
+    store.revokeInvitation(inv.invite.id);
     const r3 = store.admitGuest(sessionId);
     assert.equal(r3.ok, false, 'idempotent admit must still check alive');
   });
@@ -280,11 +280,12 @@ describe('expired/revoked host decisions (issue 3)', () => {
     const inv = store.createInvitation();
     const { sessionId } = fullJoin(store, inv.invite.token);
     store.admitGuest(sessionId);
+    store.revokeInvitation(inv.invite.id);
     now.advance(INVITE_TTL_MS + 1);
     const list = store.hostList();
     // The entry should exist but NOT show as 'admitted'
     for (const g of list.guests) {
-      assert.notEqual(g.phase, 'admitted', 'expired guest must not appear admitted');
+      assert.notEqual(g.phase, 'admitted', 'revoked guest must not appear admitted');
     }
   });
 

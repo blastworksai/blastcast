@@ -1,4 +1,6 @@
 // CodexBWAI — explicit, video-only display consent with cancellation-safe ownership.
+/** ClaudeBWAI — the OS (macOS Screen Recording) blocks capture: the message is shown as is, not the cancelled-picker line. */
+export class ScreenBlockedError extends Error {}
 export class ScreenShare {
   private current: MediaStream | null = null;
   private generation = 0;
@@ -25,8 +27,8 @@ export class ScreenShare {
       this.current = stream;
       track.addEventListener('ended', () => { if (this.current === stream) this.stop(); }, { once: true });
       this.changed(stream, 'Screen sharing is on. The host may include it in the mixed recording.');
-    } catch {
-      if (generation === this.generation) this.changed(null, 'Screen sharing did not start. The picker may have been cancelled or access denied.');
+    } catch (error) {
+      if (generation === this.generation) this.changed(null, error instanceof ScreenBlockedError ? error.message : 'Screen sharing did not start. The picker may have been cancelled or access denied.');
     } finally { if (generation === this.generation) this.pending = false; }
   }
   stop(): void {

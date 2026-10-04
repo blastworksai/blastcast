@@ -23,6 +23,8 @@ function createRecordingStore({ folder, io = fs, finalize = finalizeWebm, open =
   }
   return {
     isBusy: () => opening || Boolean(active && ['recording', 'finalizing'].includes(active.phase)),
+    // ClaudeBWAI — the latest recording's identity and target, for the diagnostics log beside it (never a renderer path).
+    current: () => active ? { id: active.id, target: active.target, phase: active.phase } : null,
     async begin() {
       if (opening || (active && ['recording', 'finalizing'].includes(active.phase))) return bad('A recording is already active.');
       opening = true;

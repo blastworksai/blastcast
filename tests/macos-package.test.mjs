@@ -1,3 +1,4 @@
+// ClaudeBWAI — icon coverage added: CFBundleIconFile, BlastCast.icns, required icon PNGs.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -5,7 +6,7 @@ import assert from 'node:assert';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assembleMacApp, transformPlist, createMacInstaller, componentPlist, copyRuntimeBundle, signMacApp, removeMacStagingDirectory } from '../packaging/macos/package.mjs';
+import { assembleMacApp, transformPlist, createMacInstaller, componentPlist, copyRuntimeBundle, signMacApp, removeMacStagingDirectory, ICON_SIZES } from '../packaging/macos/package.mjs';
 
 describe('macOS Package builder (Layout Assembly)', () => {
   let tempBase;
@@ -26,7 +27,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await fs.writeFile(path.join(runtimeDir, 'Electron.app', 'Contents', 'Frameworks', 'A', 'lib.dylib'), 'fake-lib');
     await fs.symlink('A', path.join(runtimeDir, 'Electron.app', 'Contents', 'Frameworks', 'Current'));
     
-    const fakePlist = customPlist ?? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleName</key>\n<string>Electron</string>\n<key>CFBundleExecutable</key>\n<string>Electron</string>\n<key>CFBundleDisplayName</key>\n<string>Electron</string>\n<key>CFBundleIdentifier</key>\n<string>com.github.electron</string>\n</dict>\n</plist>`;
+    const fakePlist = customPlist ?? `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>CFBundleName</key>\n<string>Electron</string>\n<key>CFBundleIconFile</key>\n<string>electron.icns</string>\n<key>CFBundleExecutable</key>\n<string>Electron</string>\n<key>CFBundleDisplayName</key>\n<string>Electron</string>\n<key>CFBundleIdentifier</key>\n<string>com.github.electron</string>\n</dict>\n</plist>`;
     await fs.writeFile(path.join(runtimeDir, 'Electron.app', 'Contents', 'Info.plist'), fakePlist);
     
     await fs.writeFile(path.join(runtimeDir, 'LICENSE'), 'fake-license');
@@ -35,10 +36,10 @@ describe('macOS Package builder (Layout Assembly)', () => {
 
   async function createFakeApp(sourceDir) {
     const files = [
-      'LICENSE', 'assets/licensing/public-key.txt', 'desktop/license-key.cjs', 'desktop/license-store.cjs', 'desktop/admission.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
-      'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
-      'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
-      'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt', 'dist/recording-status.js', 'dist/synchronization.js', 'dist/source-protocol.js', 'dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-recovery.js',
+      'LICENSE', 'assets/licensing/public-key.txt', 'assets/localhost-run-known-hosts.txt', 'desktop/license-key.cjs', 'desktop/license-store.cjs', 'desktop/admission.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
+      'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
+      'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
+      'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt', 'dist/recording-status.js', 'dist/source-protocol.js','dist/source-bitrate.js','dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js',
       'dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js', 'dist/screen-share-attention.js', 'dist/program-output.js',
       'desktop/signaling.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/peer-call.js', 'dist/audio-mix.js',
       ...['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt'].map(name => `dist/bodypix/${name}`),
@@ -58,6 +59,13 @@ describe('macOS Package builder (Layout Assembly)', () => {
     for (const f of files) {
       await fs.mkdir(path.dirname(path.join(sourceDir, f)), { recursive: true });
       await fs.writeFile(path.join(sourceDir, f), 'data');
+    }
+    // ClaudeBWAI: header-only PNGs of the right size are enough for the icns writer.
+    await fs.mkdir(path.join(sourceDir, 'assets/brand/icons'), { recursive: true });
+    for (const n of ICON_SIZES) {
+      const png = Buffer.alloc(33); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png);
+      png.writeUInt32BE(13, 8); png.write('IHDR', 12, 'latin1'); png.writeUInt32BE(n, 16); png.writeUInt32BE(n, 20);
+      await fs.writeFile(path.join(sourceDir, `assets/brand/icons/blastcast-${n}.png`), png);
     }
     await fs.writeFile(path.join(sourceDir, 'package.json'), JSON.stringify({
       name: 'blastcast', version: '0.1.0', main: 'desktop/main.cjs', devDependencies: { "mocha": "^1.0" }
@@ -92,6 +100,10 @@ describe('macOS Package builder (Layout Assembly)', () => {
     assert.strictEqual((plist.match(/<key>CFBundleExecutable<\/key>/g) || []).length, 1);
     assert.strictEqual((plist.match(/<key>NSMicrophoneUsageDescription<\/key>/g) || []).length, 1);
     assert.ok(!plist.includes('NSScreenCaptureDescription'));
+    assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>BlastCast\.icns<\/string>/);
+    const icns = await fs.readFile(path.join(res.appPath, 'Contents', 'Resources', 'BlastCast.icns'));
+    assert.equal(icns.toString('latin1', 0, 4), 'icns');
+    assert.equal(icns.readUInt32BE(4), icns.length);
 
     // Inventory checks
     const inventory = JSON.parse(await fs.readFile(path.join(res.appPath, 'Contents', 'Resources', 'inventory.json'), 'utf8'));
@@ -175,7 +187,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
   });
 
   it('uses the application version rather than the Electron version in both bundle fields', () => {
-    const input = '<plist><dict><key>CFBundleName</key><string>Electron</string><key>CFBundleExecutable</key><string>Electron</string><key>CFBundleIdentifier</key><string>org.electron</string><key>CFBundleVersion</key><string>44.4.5</string></dict></plist>';
+    const input = '<plist><dict><key>CFBundleName</key><string>Electron</string><key>CFBundleIconFile</key><string>electron.icns</string><key>CFBundleExecutable</key><string>Electron</string><key>CFBundleIdentifier</key><string>org.electron</string><key>CFBundleVersion</key><string>44.4.5</string></dict></plist>';
     const result = transformPlist(input, '0.1.0');
     assert.match(result, /CFBundleVersion<\/key>\s*<string>0.1.0<\/string>/);
     assert.match(result, /CFBundleShortVersionString<\/key>\s*<string>0.1.0<\/string>/);
@@ -239,7 +251,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
   });
 
   it('replaces existing permissions once and accepts root whitespace without a display name', () => {
-    const input = '<plist><dict><key>CFBundleName</key><string>Electron</string><key>CFBundleExecutable</key><string>Electron</string><key>CFBundleIdentifier</key><string>org.electron</string><key>NSCameraUsageDescription</key><string>Old camera text</string><key>NSMicrophoneUsageDescription</key><string>Old microphone text</string></dict>  \n\t</plist>\n';
+    const input = '<plist><dict><key>CFBundleName</key><string>Electron</string><key>CFBundleIconFile</key><string>electron.icns</string><key>CFBundleExecutable</key><string>Electron</string><key>CFBundleIdentifier</key><string>org.electron</string><key>NSCameraUsageDescription</key><string>Old camera text</string><key>NSMicrophoneUsageDescription</key><string>Old microphone text</string></dict>  \n\t</plist>\n';
     const result = transformPlist(input);
     assert.equal((result.match(/<key>NSCameraUsageDescription<\/key>/g) || []).length, 1);
     assert.equal((result.match(/<key>NSMicrophoneUsageDescription<\/key>/g) || []).length, 1);
@@ -268,7 +280,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await createFakeSkeleton(runtimeDir); await createFakeApp(sourceDir);
     for (const missing of ['dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js',
       'desktop/signaling.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/guest-settings.cjs', 'desktop/guest-wizard.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/bodypix/model-stride16.json', 'dist/bodypix/group1-shard1of1.bin', 'dist/peer-call.js', 'dist/audio-mix.js', 'dist/1cam.png', 'dist/screensharevert-8.png',
-      'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs', 'dist/recording-status.js', 'dist/synchronization.js', 'dist/source-protocol.js', 'dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-recovery.js']) {
+      'assets/brand/icons/blastcast-1024.png', 'assets/brand/icons/blastcast-16.png', 'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs', 'dist/recording-status.js', 'dist/source-protocol.js','dist/source-bitrate.js','dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js']) {
       const file = path.join(sourceDir, missing), contents = await fs.readFile(file);
       await fs.rm(file);
       const outDir = path.join(tempBase, 'out');

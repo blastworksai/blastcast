@@ -168,3 +168,17 @@ test('screen signals and exact MID metadata stay admitted-only and strictly shap
   for(const message of [{type:'screen',active:'yes'},{type:'screen',active:true,track:'secret'}, {type:'description',description:{type:'answer',sdp:'fixture'},screenMid:'x'.repeat(33)}, {type:'description',description:{type:'answer',sdp:'fixture'},screenMid:'2',extra:true}])assert.equal(broker.guestSend(sessionCredential,callId,message).ok,false);
   assert.equal(broker.pollGuestSignals(id,callId,0).messages[0].message.active,true);
 });
+
+test('an ICE-restart offer is the one repeat offer a live call accepts, numbered and on the same callId only', () => {
+  const store = createAdmissionStore({ now: Date.now }), broker = createSignalingBroker(store);
+  const invite = store.createInvitation(); const { sessionCredential } = store.redeemInvitation(invite.invite.token, 'restart'.repeat(6) + 'x');
+  store.requestJoin(sessionCredential, { name: 'Reed', consent: true }); const id = store.hostList().guests[0].session.id; store.admitGuest(id);
+  const callId = 'restart-call-123456789', offer = extra => ({ type: 'description', description: { type: 'offer', sdp: 'x' }, ...extra });
+  assert.equal(broker.sendGuestSignal(id, callId, offer({})).ok, true);
+  assert.equal(broker.sendGuestSignal(id, callId, offer({})).ok, false, 'a plain repeat offer is still refused');
+  assert.equal(broker.sendGuestSignal(id, callId, offer({ iceRestart: true, generation: 1 })).ok, true);
+  assert.equal(broker.sendGuestSignal(id, 'other-call-12345678901', offer({ iceRestart: true, generation: 1 })).ok, false, 'never on another callId');
+  for (const bad of [{ iceRestart: false }, { generation: 0 }, { generation: 1.5 }, { iceRestart: true, generation: 'x' }]) assert.equal(broker.sendGuestSignal(id, callId, offer(bad)).ok, false);
+  assert.equal(broker.guestPoll(sessionCredential, callId, 0).messages.length, 2, 'the host queue carried on: both offers, nothing reset');
+  assert.equal(broker.guestSend(sessionCredential, callId, { type: 'description', description: { type: 'answer', sdp: 'y' }, generation: 1 }).ok, true);
+});

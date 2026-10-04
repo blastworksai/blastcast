@@ -15,7 +15,7 @@ export class SourceSession {
   private recoveryIdentity: SourceRecoveryIdentity | null = null;
   private timer: ReturnType<typeof setInterval>;
   constructor(private control: () => Promise<SourceControl>, private transport: SourceTransport,
-    private changed: (state: SourceCaptureState) => void, private message: (text: string) => void, private durable = false, private options: { allowPartialSource?: boolean } = {}) {
+    private changed: (state: SourceCaptureState) => void, private message: (text: string) => void, private durable = false, private options: { allowPartialSource?: boolean; uplink?: () => Promise<{ availableBps: number | null; callCapBps: number } | null> } = {}) {
     this.timer = setInterval(() => void this.poll(), 500);
   }
   get busy(): boolean { return this.capture?.busy ?? false; }
@@ -61,7 +61,7 @@ export class SourceSession {
         this.recoveryIdentity = { ...binding,episodeId:episode.episodeId };
       }
       let capture: SourceCapture;
-      capture = new SourceCapture({ transport: this.transport, allowPartialSource: this.options.allowPartialSource,
+      capture = new SourceCapture({ transport: this.transport, allowPartialSource: this.options.allowPartialSource, uplink: this.options.uplink,
         durable: this.durable ? (progress, failed) => new SourceOutbox({store:new IndexedSourceQueue(undefined,undefined,binding), transport:this.transport,progress,failed}) : undefined, onState: state => {
         if (this.capture === capture) this.changed(state);
       } });

@@ -21,7 +21,10 @@ function exact(value, keys) {
 }
 function snapshot(input, allowBlank = false) {
   try {
-    const value = exact(input, ['domain', 'origin', 'port', 'helper']);
+    // ClaudeBWAI — saved files from before the privacy notice lack the flag; they load as not acknowledged.
+    const withAck = input && typeof input === 'object' && Object.hasOwn(input, 'freeRouteAcknowledged');
+    const value = exact(input, withAck ? ['domain', 'origin', 'port', 'helper', 'freeRouteAcknowledged'] : ['domain', 'origin', 'port', 'helper']);
+    if (withAck && typeof value.freeRouteAcknowledged !== 'boolean') invalid();
     const helper = exact(value.helper, ['provider', 'freeAccountConfirmed', 'relay']);
     const relay = exact(helper.relay, ['urls', 'username', 'credential', 'iceTransportPolicy']);
     if (!['yes', 'no'].includes(value.domain) || typeof value.origin !== 'string' || value.origin.length > 300 || /[\x00-\x1f\x7f]/.test(value.origin)) invalid();
@@ -31,7 +34,7 @@ function snapshot(input, allowBlank = false) {
     const route = parseRoute({ origin: value.domain === 'no' ? 'https://pending.invalid' : value.origin,
       port: value.port, routeType: 'tunnel', helper: { ...helper, relay: { ...relay, credential: blank ? 'pending-saved-credential' : relay.credential } } });
     const server = route.helper.iceServers[0];
-    return { domain: value.domain, origin: value.domain === 'no' ? '' : route.origin, port: route.port,
+    return { domain: value.domain, freeRouteAcknowledged: value.domain === 'no' && value.freeRouteAcknowledged === true, origin: value.domain === 'no' ? '' : route.origin, port: route.port,
       helper: { provider: helper.provider, freeAccountConfirmed: true,
         relay: { urls: [...server.urls], username: server.username, credential: blank ? '' : server.credential, iceTransportPolicy: route.helper.iceTransportPolicy } } };
   } catch { invalid(); }
@@ -108,6 +111,8 @@ function createGuestSettings({ directory, safeStorage }) {
     save(input) {
       let value;
       try { value = snapshot(input, true); } catch (error) { return Promise.resolve({ ok: false, message: message(error) }); }
+      // The main process enforces the free-address privacy acknowledgement; the renderer's checkbox is not the gate.
+      if (value.domain === 'no' && !value.freeRouteAcknowledged) return Promise.resolve({ ok: false, message: 'Tick the free address privacy notice before saving.' });
       return mutate(async () => {
         if (value.helper.relay.credential === '') {
           const previous = await read(); const relay = value.helper.relay; const saved = previous?.helper.relay;

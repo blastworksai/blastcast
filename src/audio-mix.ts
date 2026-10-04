@@ -39,6 +39,16 @@ export class HostAudioMixer {
     }
   }
 
+  /** ClaudeBWAI — swap the host microphone feeding the mix (Mic toggle, Reconnect). The mixed stream, and so a running recording, is untouched. */
+  setHostStream(hostStream: MediaStream): void {
+    if (this.closed) throw new Error('AudioContext is closed');
+    this.hostSource?.disconnect(); this.hostSource = null;
+    if (hostStream.getAudioTracks().length) {
+      this.hostSource = this.ctx.createMediaStreamSource(hostStream);
+      this.hostSource.connect(this.mixedDestination);
+    }
+  }
+
   async resume(): Promise<void> {
     if (this.closed) {
       return Promise.reject(new Error("AudioContext is closed"));

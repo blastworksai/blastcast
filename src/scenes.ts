@@ -25,7 +25,8 @@ export interface SceneDefinition {
   readonly slots: readonly SceneSlot[];
 }
 
-export type SourceState = 'live' | 'ended' | 'muted' | 'empty';
+/** 'reconnecting' (ClaudeBWAI, 4 Oct): a guest's media path is recovering; the tile keeps its last frame, dimmed, with an amber badge. */
+export type SourceState = 'live' | 'ended' | 'muted' | 'empty' | 'reconnecting';
 
 export interface DrawableSource {
   readonly kind: SourceKind;
@@ -189,6 +190,21 @@ export function drawPlaceholder(ctx: CanvasRenderingContext2D, slot: SceneSlot, 
   ctx.fillText(label, x + w / 2, y + h / 2, w - 16);
 }
 
+/** Dims the last frame and adds a small amber 'Reconnecting…' badge in the slot's top-left corner. */
+export function drawReconnectingOverlay(ctx: CanvasRenderingContext2D, slot: SceneSlot): void {
+  const { x, y, w, h } = slot.rect;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, w, h);
+  const fontSize = Math.max(11, Math.min(20, Math.floor(h / 14)));
+  ctx.font = `600 ${fontSize}px sans-serif`;
+  const text = 'Reconnecting…';
+  const bw = Math.min(w - 8, ctx.measureText(text).width + fontSize), bh = fontSize * 1.7;
+  ctx.fillStyle = '#ffab01';
+  ctx.fillRect(x + 8, y + 8, bw, bh);
+  ctx.fillStyle = '#232323'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + 8 + fontSize / 2, y + 8 + bh / 2, bw - fontSize);
+}
+
 export type AssetResolver = (filename: string) => Promise<CanvasImageSource>;
 
 export interface CompositorOptions {
@@ -248,6 +264,7 @@ export class SceneCompositor {
       ctx.fillStyle = PLACEHOLDER_BG;
       ctx.fillRect(slot.rect.x, slot.rect.y, slot.rect.w, slot.rect.h);
       ctx.drawImage(source.drawable, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
+      if (source.state === 'reconnecting') drawReconnectingOverlay(ctx, slot);
     }
 
     // Draw transparent background over the top to preserve branding and anti-aliased borders

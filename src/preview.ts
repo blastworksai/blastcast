@@ -1,6 +1,9 @@
 // CodexBWAI: a preview owns every acquired track until it stops or is superseded.
 export type SourceErrors = { camera?: string; microphone?: string };
-export type PreviewState = { errors?: SourceErrors; phase: 'idle' | 'requesting' | 'live' | 'interrupted' | 'error'; message: string };
+export type DeviceKind = 'camera' | 'microphone';
+/** ClaudeBWAI — a device that stopped sending (its track muted): which one, so the studio can name it and offer Reconnect. */
+export type DeviceNotice = { kind: DeviceKind; label: string; stillMuted: boolean };
+export type PreviewState = { errors?: SourceErrors; notices?: DeviceNotice[]; phase: 'idle' | 'requesting' | 'live' | 'interrupted' | 'error'; message: string; denied?: true };
 export type Selection = { camera: string; microphone: string; height: 1080 | 2160 | 'auto'; cameraEnabled?: boolean; microphoneEnabled?: boolean };
 
 export function mediaError(error: unknown): string {
@@ -14,6 +17,12 @@ export function mediaError(error: unknown): string {
     SecurityError: 'The system blocked device access. Check your camera and microphone privacy settings.',
   };
   return messages[name] ?? 'Preview could not start. Check your devices and try again.';
+}
+
+// Orientation-neutral: a portrait 2160x3840 camera passes the landscape 3840x2160 ceiling.
+export function exceedsCeiling(settings: { width?: number; height?: number }, ceiling: { width: number; height: number }): boolean {
+  const w = settings.width ?? 0, h = settings.height ?? 0;
+  return Math.max(w, h) > ceiling.width || Math.min(w, h) > ceiling.height;
 }
 
 export function constraints(selection: Selection): MediaStreamConstraints {
@@ -33,25 +42,76 @@ export function constraints(selection: Selection): MediaStreamConstraints {
   };
 }
 
+// ClaudeBWAI — einh 3 Oct, "B: name + fix + button". The wording for a device whose track went quiet.
+// A fresh track that arrives muted (or mutes right after a Reconnect) means the cause is outside BlastCast: say so.
+// The host's own OS names where a device gets muted: einh's "Windows" wording on Windows, the equivalent elsewhere.
+export type HostOs = 'windows' | 'macos' | 'linux';
+export function hostOs(userAgent = globalThis.navigator?.userAgent ?? ''): HostOs { return /Mac OS X|Macintosh/.test(userAgent) ? 'macos' : /Linux|X11/.test(userAgent) ? 'linux' : 'windows'; }
+const OS_WORDS: Record<HostOs, { short: string; sound: string; camera: string }> = {
+  windows: { short: 'in Windows', sound: 'in Windows Sound settings', camera: 'in Windows camera settings' },
+  macos: { short: 'in macOS', sound: 'in System Settings › Sound', camera: 'in System Settings › Privacy & Security › Camera' },
+  linux: { short: 'in your system settings', sound: 'in your system sound settings', camera: 'in your system camera settings' },
+};
+export function deviceNoticeText(notice: DeviceNotice, os: HostOs = hostOs()): string {
+  const label = notice.label.trim(), w = OS_WORDS[os];
+  if (notice.kind === 'microphone') return notice.stillMuted
+    ? `Still no sound from ${label || 'your microphone'}. Check that it isn't muted ${w.sound} and that no other app is using it exclusively.`
+    : `Your microphone${label ? ` (${label})` : ''} stopped sending sound — it may be muted ${w.short} or in use by another app.`;
+  return notice.stillMuted
+    ? `Still no video from ${label || 'your camera'}. Check that it isn't turned off ${w.camera} and that no other app is using it exclusively.`
+    : `Your camera${label ? ` (${label})` : ''} stopped sending video — it may be turned off ${w.short} or in use by another app.`;
+}
+export function reconnectLabel(kind: DeviceKind): string { return kind === 'microphone' ? 'Reconnect microphone' : 'Reconnect camera'; }
+const kindOf = (track: MediaStreamTrack): DeviceKind => track.kind === 'video' ? 'camera' : 'microphone';
+/** A mute this soon after a Reconnect counts as the fresh track also being muted. */
+const STILL_MUTED_WINDOW_MS = 5000;
+export type PreviewOptions = {
+  /** Studio: name the muted device (deviceNoticeText) and publish notices. Off keeps the guest page's generic wording. */
+  deviceNotices?: boolean;
+  createStream?: (tracks: MediaStreamTrack[]) => MediaStream;
+  now?: () => number;
+};
+
 export class Preview {
   microphoneMuted = false;
 
   setMicrophoneMuted(muted: boolean): void {
     this.microphoneMuted = muted;
     this.current?.getAudioTracks().forEach(track => { track.enabled = !muted; });
+    // ClaudeBWAI — Codex review of 68ea271 (P1): a microphone replaced mid-take still feeds the host original until that
+    // original finishes, so Mute must silence it too (otherwise the original keeps recording speech while the UI says Muted).
+    for (const track of this.retained) if (track.kind === 'audio') track.enabled = !muted;
     this.changed(this.state, this.current);
+  }
+
+  /** ClaudeBWAI — tracks handed back by setDevice({ retain }) that still feed a running original; Mute follows them. */
+  private retained = new Set<MediaStreamTrack>();
+  /** Stop and forget retained tracks once nothing records them any more. */
+  releaseRetained(): void {
+    for (const track of this.retained) track.stop();
+    this.retained.clear();
   }
 
   private generation = 0;
   private current: MediaStream | null = null;
   private pending = new Set<MediaStream>();
   private errors: SourceErrors = {};
+  private notices: Partial<Record<DeviceKind, DeviceNotice>> = {};
+  private independent = false;
+  private kindGeneration: Record<DeviceKind, number> = { camera: 0, microphone: 0 };
+  private reconnectedAt = new Map<MediaStreamTrack, number>();
   state: PreviewState = { phase: 'idle', message: 'Your camera and microphone are off.' };
+  private readonly createStream: (tracks: MediaStreamTrack[]) => MediaStream;
+  private readonly now: () => number;
 
   constructor(
     private readonly acquire: (constraints: MediaStreamConstraints) => Promise<MediaStream>,
     private readonly changed: (state: PreviewState, stream: MediaStream | null) => void,
-  ) {}
+    private readonly options: PreviewOptions = {},
+  ) {
+    this.createStream = options.createStream ?? (tracks => new MediaStream(tracks));
+    this.now = options.now ?? (() => Date.now());
+  }
 
   private release(): void {
     this.current?.getTracks().forEach(track => track.stop());
@@ -61,15 +121,125 @@ export class Preview {
   }
 
   private publish(phase: PreviewState['phase'], message: string): void {
-    this.state = { phase, message, ...(Object.keys(this.errors).length ? { errors: { ...this.errors } } : {}) };
+    const notices = Object.values(this.notices);
+    this.state = { phase, message, ...(Object.keys(this.errors).length ? { errors: { ...this.errors } } : {}),
+      ...(notices.length ? { notices: notices.map(notice => ({ ...notice })) } : {}) };
     this.changed(this.state, this.current);
   }
 
   stop(message = 'Preview stopped. Your camera and microphone are off.'): void {
     this.generation++;
     this.release();
-    this.errors = {};
+    this.errors = {}; this.notices = {};
     this.publish('idle', message);
+  }
+
+  // ClaudeBWAI — 'interrupted' while any owned track is muted, else 'live'; the message names each quiet device.
+  private publishCurrent(): void {
+    const tracks = this.current?.getTracks() ?? [];
+    if (!tracks.length) { this.publish(Object.keys(this.errors).length ? 'error' : 'idle', Object.values(this.errors).join(' ') || 'Your camera and microphone are off.'); return; }
+    if (tracks.some(track => track.muted)) {
+      this.publish('interrupted', this.options.deviceNotices
+        ? [...Object.values(this.notices).map(notice => deviceNoticeText(notice)), ...Object.values(this.errors)].join(' ')
+        : 'A device is temporarily unavailable. Check its privacy switch or other apps.');
+    } else this.publish('live', this.liveMessage());
+  }
+
+  private noticeFor(track: MediaStreamTrack): DeviceNotice {
+    const at = this.reconnectedAt.get(track);
+    return { kind: kindOf(track), label: track.label ?? '', stillMuted: at !== undefined && this.now() - at <= STILL_MUTED_WINDOW_MS };
+  }
+
+  /** Mute, unmute and end handling for one track; every handler ignores a track this preview no longer owns. */
+  private watch(track: MediaStreamTrack): void {
+    const owned = () => Boolean(this.current?.getTracks().includes(track));
+    track.addEventListener('ended', () => {
+      if (!owned()) return;
+      const kind = kindOf(track);
+      delete this.notices[kind];
+      if (this.independent) {
+        this.current!.removeTrack(track);
+        track.stop();
+        this.errors[kind] = `${kind === 'camera' ? 'Camera' : 'Microphone'} disconnected. Reconnect it and enable it again.`;
+        this.publish(this.current!.getTracks().length ? 'live' : 'error', Object.values(this.errors).join(' '));
+        return;
+      }
+      this.generation++;
+      this.release();
+      this.publish('error', 'A device disconnected or access was revoked. Reconnect it, refresh devices and try again.');
+    });
+    track.addEventListener('mute', () => {
+      if (!owned()) return;
+      this.notices[kindOf(track)] = this.noticeFor(track);
+      this.publishCurrent();
+    });
+    track.addEventListener('unmute', () => {
+      if (!owned()) return;
+      delete this.notices[kindOf(track)];
+      this.publishCurrent();
+    });
+  }
+
+  /**
+   * ClaudeBWAI — turn ONE device on, off or restart it (Reconnect) while the other device's track keeps running untouched.
+   * The result is a new stream object holding the untouched track plus the new one, so nothing that recorded the old
+   * stream sees its track set change. Replaced tracks are stopped, or handed back in `retired` when `retain` is set
+   * (a running original still holds them; stopping one would end that original).
+   */
+  async setDevice(kind: DeviceKind, selection: Selection, authorize: () => Promise<boolean>,
+    options: { retain?: boolean | (() => boolean); reconnect?: boolean } = {}): Promise<{ retired: MediaStreamTrack[] }> {
+    const current = this.current;
+    if (!current || this.state.phase === 'requesting') { await this.start(selection, authorize); return { retired: [] }; }
+    const generation = this.generation, attempt = ++this.kindGeneration[kind];
+    const trackKind = kind === 'camera' ? 'video' : 'audio';
+    const enabled = kind === 'camera' ? selection.cameraEnabled !== false : selection.microphoneEnabled !== false;
+    const stale = () => generation !== this.generation || attempt !== this.kindGeneration[kind] || this.current !== current;
+    let fresh: MediaStreamTrack | null = null;
+    if (enabled) {
+      let acquired: MediaStream | null = null;
+      try {
+        if (!await authorize()) throw new DOMException('Access was not granted.', 'NotAllowedError');
+        if (stale()) return { retired: [] };
+        const requested = constraints({ ...selection, cameraEnabled: kind === 'camera', microphoneEnabled: kind === 'microphone' });
+        acquired = await this.acquire({ video: kind === 'camera' ? requested.video : false, audio: kind === 'microphone' ? requested.audio : false });
+        if (stale()) { acquired.getTracks().forEach(track => track.stop()); return { retired: [] }; }
+        for (const track of acquired.getTracks()) if (track.kind !== trackKind) track.stop();
+        fresh = acquired.getTracks().find(track => track.kind === trackKind) ?? null;
+        if (!fresh || fresh.readyState !== 'live') throw new Error('Selected device is not live');
+        const settings = fresh.getSettings?.() ?? {};
+        const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
+        if (exceedsCeiling(settings, ceiling))
+          throw new Error('Camera exceeded the selected ceiling');
+      } catch (error) {
+        acquired?.getTracks().forEach(track => track.stop());
+        if (stale()) return { retired: [] };
+        // A failed Reconnect keeps the quiet track (and its notice); a failed turn-on adds nothing.
+        this.errors[kind] = `${kind === 'camera' ? 'Camera' : 'Microphone'}: ${mediaError(error)}`;
+        this.publishCurrent();
+        return { retired: [] };
+      }
+    }
+    const kept = current.getTracks().filter(track => track.kind !== trackKind);
+    const replaced = current.getTracks().filter(track => track.kind === trackKind);
+    const tracks = [...kept, ...(fresh ? [fresh] : [])].sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'video' ? -1 : 1);
+    delete this.errors[kind]; delete this.notices[kind];
+    for (const track of replaced) this.reconnectedAt.delete(track);
+    if (fresh) {
+      if (fresh.kind === 'audio') fresh.enabled = !this.microphoneMuted;
+      if (options.reconnect) this.reconnectedAt.set(fresh, this.now());
+      this.watch(fresh);
+      if (fresh.muted) this.notices[kind] = { kind, label: fresh.label ?? '', stillMuted: Boolean(options.reconnect) };
+    }
+    this.independent = true;
+    this.current = tracks.length ? this.createStream(tracks) : null;
+    // ClaudeBWAI — Codex review of 68ea271 (P2): decided now, at the swap, not when the acquisition started: Record may have
+    // been pressed meanwhile, and the replaced track then feeds the new original.
+    const retain = typeof options.retain === 'function' ? options.retain() : Boolean(options.retain);
+    if (retain) for (const track of replaced) { if (track.kind === 'audio') track.enabled = !this.microphoneMuted; this.retained.add(track); }
+    else replaced.forEach(track => track.stop());
+    if (!this.current) { this.errors = {}; this.notices = {}; this.publish('idle', 'Your camera and microphone are off.'); }
+    else this.publishCurrent();
+    return { retired: retain ? replaced : [] };
   }
 
 
@@ -98,7 +268,7 @@ export class Preview {
         if (!tracks.length || tracks.some(track => track.readyState !== 'live')) throw new Error('Selected device is not live');
         const settings = stream.getVideoTracks()[0]?.getSettings() ?? {};
         const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
-        if ((settings.width ?? 0) > ceiling.width || (settings.height ?? 0) > ceiling.height) throw new Error('Camera exceeded the selected ceiling');
+        if (exceedsCeiling(settings, ceiling)) throw new Error('Camera exceeded the selected ceiling');
         this.pending.add(stream);
         return stream;
       } catch (error) {
@@ -127,12 +297,16 @@ export class Preview {
       return;
     }
     const independent = selection.cameraEnabled !== undefined || selection.microphoneEnabled !== undefined;
+    this.independent = independent;
+    this.notices = {};
     this.publish('requesting', 'Waiting for device access…');
     try {
       const allowed = await authorize();
       if (generation !== this.generation) return;
       if (!allowed) {
         this.publish('idle', 'Access was not granted. Your devices are off. Try again when you are ready.');
+        this.state = { ...this.state, denied: true }; // ClaudeBWAI — lets the studio explain a macOS denial visibly
+        this.changed(this.state, this.current);
         return;
       }
       const stream = independent
@@ -155,33 +329,14 @@ export class Preview {
       }
       const settings = video?.getSettings() ?? {};
       const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
-      if ((settings.width ?? 0) > ceiling.width || (settings.height ?? 0) > ceiling.height) {
+      if (exceedsCeiling(settings, ceiling)) { // orientation-neutral: portrait passes the landscape ceiling
         throw new Error('Camera exceeded the selected ceiling');
       }
       for (const track of stream.getTracks()) {
-        track.addEventListener('ended', () => {
-          if (generation !== this.generation) return;
-          if (independent) {
-            stream.removeTrack(track);
-            track.stop();
-            this.errors[track.kind === 'video' ? 'camera' : 'microphone'] = `${track.kind === 'video' ? 'Camera' : 'Microphone'} disconnected. Reconnect it and enable it again.`;
-            this.publish(stream.getTracks().length ? 'live' : 'error', Object.values(this.errors).join(' '));
-            return;
-          }
-          this.generation++;
-          this.release();
-          this.publish('error', 'A device disconnected or access was revoked. Reconnect it, refresh devices and try again.');
-        });
-        track.addEventListener('mute', () => {
-          if (generation === this.generation) this.publish('interrupted', 'A device is temporarily unavailable. Check its privacy switch or other apps.');
-        });
-        track.addEventListener('unmute', () => {
-          if (generation === this.generation && stream.getTracks().every(track => !track.muted)) this.publish('live', this.liveMessage());
-        });
+        this.watch(track);
+        if (track.muted) this.notices[kindOf(track)] = this.noticeFor(track);
       }
-      if (stream.getTracks().some(track => track.muted)) {
-        this.publish('interrupted', 'A device is temporarily unavailable. Check its privacy switch or other apps.');
-      } else this.publish('live', this.liveMessage());
+      this.publishCurrent();
     } catch (error) {
       if (generation !== this.generation) return;
       this.release();

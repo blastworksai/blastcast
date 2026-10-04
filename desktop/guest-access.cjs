@@ -14,13 +14,15 @@ function createGuestAccess({ guests, directAccess, tunnel, onConfigured = () => 
   async function stop() { ++epoch; return cleanup(); }
   async function configure(input, generated = false) {
     let config;
+    if (generated && input && typeof input === 'object' && input.privacyAcknowledged !== true) return { ok: false, message: 'Confirm the free address privacy notice in guest settings before using the free address.' };
     try {
       if (generated) {
-        if (!input || typeof input !== 'object' || Object.keys(input).sort().join() !== 'helper,port' || input.helper?.provider !== 'localhost-run') throw Error('Invalid free address setup.');
+        if (!input || typeof input !== 'object' || Object.keys(input).sort().join() !== 'helper,port,privacyAcknowledged' || input.helper?.provider !== 'localhost-run') throw Error('Invalid free address setup.');
         config = { origin: 'https://pending.invalid', port: input.port, routeType: 'tunnel', helper: input.helper };
       } else config = input;
       parseRoute(config);
     } catch { return { ok: false, message: 'Check the guest address, local port and free media-relay settings.' }; }
+    if (generated && input.privacyAcknowledged !== true) return { ok: false, message: 'Confirm the free address privacy notice in guest settings before using the free address.' };
     if (changing) return { ok: false, message: 'Guest setup is already running. Wait or cancel it.' };
     changing = true; const current = ++epoch; connectionMessage = '';
     try {
@@ -28,7 +30,7 @@ function createGuestAccess({ guests, directAccess, tunnel, onConfigured = () => 
       if (closed?.ok === false) return closed;
       if (current !== epoch) return { ok: false, message: 'Guest setup was cancelled.' };
       const result = await guests.configure(config, generated ? async port => {
-        const opened = await tunnel.start(port);
+        const opened = await tunnel.start(port, { privacyAcknowledged: true });
         if (current !== epoch) throw Error('Guest setup was cancelled.');
         if (!opened.ok) { connectionMessage = opened.message; throw Error('Free address unavailable.'); }
         return opened.origin;

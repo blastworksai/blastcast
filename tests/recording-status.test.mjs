@@ -1,7 +1,7 @@
 // CodexBWAI — status must not turn delivery evidence into timing evidence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recordingRows } from '../dist/recording-status.js';
+import { originalsWaitMessage, recordingRows } from '../dist/recording-status.js';
 const mixed = (phase = 'complete', episodeId = 'current') => ({ phase, episodeId, message:'Mixed status', pendingBytes:0, peakBytes:0 });
 const source = (participantId, phase = 'complete', failed = false) => ({ participantId, label:participantId, phase, failed, bytes:1024, epochs:[] });
 const status = (sources, phase = 'stopped', episodeId = 'current') => ({ episodeId, phase, hostNowMs:0, sources, allSourcesComplete:sources.every(s=>s.phase==='complete') });
@@ -52,4 +52,17 @@ test('projection preserves labels as data and never mutates or retains source ob
   rows[1].label='changed'; rows[1].synchronization.limitMs=999;
   assert.deepEqual(input,before);
   assert.equal(recordingRows(mixed(),input)[1].synchronization.limitMs,40);
+});
+// ClaudeBWAI — einh 3 Oct: the wait line never promises an hour when Finish with missing originals is already available.
+test('originals wait line follows closePolicy', () => {
+  const base = { episodeId: 'e', phase: 'stopped', hostNowMs: 0, sources: [], allSourcesComplete: false };
+  assert.equal(originalsWaitMessage({ ...base, canFinishIncomplete: true, finishReason: 'nobody-can-deliver', incompleteOverrideInMs: 3_000_000 }),
+    'No guest is still sending an original. You can finish with missing originals now.');
+  assert.equal(originalsWaitMessage({ ...base, canFinishIncomplete: true, finishReason: 'overdue', incompleteOverrideInMs: 0 }),
+    'More than an hour has passed since production finished. You can now explicitly finish with missing originals.');
+  const waiting = originalsWaitMessage({ ...base, canFinishIncomplete: false, finishReason: 'guest-connected', incompleteOverrideInMs: 30 * 60_000 });
+  assert.equal(waiting, 'Keep the studio open while connected guests send their originals. Finish with missing originals unlocks when they stop sending, or in 30 min.');
+  assert.doesNotMatch(originalsWaitMessage({ ...base, canFinishIncomplete: true, finishReason: 'nobody-can-deliver', incompleteOverrideInMs: 3_000_000 }), /hour|min\./);
+  assert.match(originalsWaitMessage({ ...base, recovered: true, canFinishIncomplete: true, finishReason: 'recovered' }), /^Recovered originals/);
+  assert.equal(originalsWaitMessage({ ...base, phase: 'recording' }), 'Original backup set pending. Keep the studio and guest pages open.');
 });

@@ -250,13 +250,14 @@ test('PeerCall disconnected state triggers recovery timeout', async () => {
   pc.connectionState = 'disconnected';
   pc.onconnectionstatechange();
   
-  // Fast forward is tricky in node:test, let's just check if it was set
-  // we could mock setTimeout, but let's just check the internal connectionTimeout property via hack
-  assert.ok(call.connectionTimeout !== null);
+  // ClaudeBWAI — a drop after the call was up is now a 30 s recovery (state 'reconnecting'); timing is covered in peer-reconnect.test.mjs.
+  assert.ok(call.deadlineTimer !== null);
+  assert.strictEqual(states.at(-1), 'reconnecting');
   
   pc.connectionState = 'connected';
   pc.onconnectionstatechange();
   
+  assert.ok(call.deadlineTimer === null);
   assert.ok(call.connectionTimeout === null);
   
   call.close();

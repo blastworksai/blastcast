@@ -25,3 +25,12 @@
 .bcast-admission-btn--remove { background: #d32f2f; color: #fff; }
 .bcast-admission-btn--revoke { background: #555; color: #fff; }
 .bcast-admission-error { color: #f44336; font-size: 12px; padding: 4px 0; }
+/* ClaudeBWAI — red × that clears a finished guest row. */
+.bcast-admission-btn--dismiss { background: transparent; color: #e5484d; border: 1px solid transparent; min-width: 24px; min-height: 24px; padding: 0 6px; font-size: 16px; line-height: 1; font-weight: 700; cursor: pointer; }
+.bcast-admission-btn--dismiss:hover { color: #ff6369; border-color: #e5484d; }
+.bcast-admission-btn--dismiss:focus-visible { outline: 2px solid #e5484d; outline-offset: 1px; }
+/* ClaudeBWAI — an admitted guest whose page has gone: amber sentence case, allowed to wrap instead of pushing Remove off the row. */
+.bcast-admission-item[data-presence="disconnected"] .bcast-admission-phase[data-phase="admitted"] { color: #ffab01; text-transform: none; letter-spacing: 0; flex-shrink: 1; min-width: 0; }
+/* ClaudeBWAI — einh 4 Oct: media path recovering. Same amber and wrapping as the Disconnected row. */
+.bcast-admission-item[data-media="lost"] .bcast-admission-phase[data-phase="admitted"],
+.bcast-admission-item[data-media="reconnecting"] .bcast-admission-phase[data-phase="admitted"] { color: #ffab01; text-transform: none; letter-spacing: 0; flex-shrink: 1; min-width: 0; }

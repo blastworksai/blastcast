@@ -63,9 +63,12 @@ test('a closing original store cannot start another mixed recording', async () =
   assert.equal((await f.controller.begin()).ok,false);
   assert.equal(f.events.length,0);
 });
-test('incomplete originals require more than an hour after production, then explicit confirmation', async () => {
+test('while a connected guest is still sending, incomplete originals require more than an hour after production, then explicit confirmation', async () => {
   const f = fixture();
   await f.controller.begin();
+  // ClaudeBWAI — the admitted guest keeps uploading (idle 0 ms), so closePolicy says a guest can still deliver.
+  const sending = { participantId: 'guest', label: 'Guest', phase: 'recording', idleMs: 0 };
+  f.sources.status = (status => () => { const s = status(); return s ? { ...s, sources: [sending] } : s; })(f.sources.status);
   f.advance(2 * 60 * 60 * 1000); // Long production time does not count as waiting for originals.
   assert.equal((await f.controller.closeSources()).ok, false);
   await f.controller.finish('episode');
@@ -76,8 +79,10 @@ test('incomplete originals require more than an hour after production, then expl
   assert.equal((await f.controller.closeSources()).ok, false);
   assert.equal(f.events.includes('confirm'),false,'no early override even with a willing confirmation');
   await f.controller.finish('episode'); // A repeated finish must not reset the elapsed wait.
+  assert.equal(f.controller.sourceStatus().canFinishIncomplete, false);
   f.advance(1);
   assert.equal(f.controller.sourceStatus().incompleteOverrideInMs,0);
+  assert.deepEqual([f.controller.sourceStatus().canFinishIncomplete, f.controller.sourceStatus().finishReason], [true, 'overdue']);
   f.setConfirm(false);
   assert.equal((await f.controller.closeSources()).ok, false);
   f.setConfirm(true);
@@ -85,16 +90,80 @@ test('incomplete originals require more than an hour after production, then expl
   assert.equal(f.controller.busy(), false);
   assert.equal((await f.controller.begin()).ok, true);
 });
-test('recovered incomplete originals start a fresh conservative override wait on first observation', async () => {
+test('in-studio Finish follows closePolicy: nobody able to deliver means no hour wait, only the confirmation (einh 3 Oct)', async () => {
+  const f = fixture();
+  await f.controller.begin(); await f.controller.finish('episode');
+  // The guest's original stopped arriving more than 2 minutes ago (or the guest left): nobody can deliver.
+  f.setSnapshot({ episodeId: 'episode', phase: 'stopped', allSourcesComplete: false,
+    sources: [{ participantId: 'host', label: 'Host', phase: 'complete', idleMs: 0 }, { participantId: 'guest', label: 'Guest', phase: 'recording', idleMs: 121000 }] });
+  const status = f.controller.sourceStatus();
+  assert.ok(status.incompleteOverrideInMs > 3_000_000, 'the hour has not passed');
+  assert.deepEqual([status.canFinishIncomplete, status.finishReason], [true, 'nobody-can-deliver']);
+  assert.equal((await f.controller.closeSources()).ok, false, 'a declined confirmation keeps receiving');
+  assert.deepEqual(f.events.at(-1), 'confirm');
+  f.setConfirm(true);
+  assert.equal((await f.controller.closeSources()).ok, true);
+  assert.deepEqual(f.events.at(-1), ['source-close', 'episode']);
+  assert.equal((await f.controller.begin()).ok, true, 'Record is available again');
+});
+test('closeSources refuses (and never confirms) while a guest is still sending, and re-checks after the dialog', async () => {
+  const f = fixture();
+  await f.controller.begin(); await f.controller.finish('episode');
+  const sending = { episodeId: 'episode', phase: 'stopped', allSourcesComplete: false,
+    sources: [{ participantId: 'guest', label: 'Guest', phase: 'recording', idleMs: 500 }] };
+  f.setSnapshot(sending);
+  assert.equal(f.controller.sourceStatus().canFinishIncomplete, false);
+  const refused = await f.controller.closeSources();
+  assert.deepEqual(refused, { ok: false, message: 'A connected guest is still sending their original. Keep the studio open until it arrives or they leave.' });
+  assert.equal(f.events.includes('confirm'), false);
+  // Nobody sending when the dialog opens, but the guest resumes before the host answers: nothing is closed.
+  f.setConfirm(true);
+  f.sources.status = (() => { let calls = 0; const quiet = { ...sending, sources: [{ ...sending.sources[0], idleMs: 200000 }] };
+    return () => (++calls <= 1 ? quiet : sending); })();
+  assert.equal((await f.controller.closeSources()).ok, false);
+  assert.equal(f.events.includes('confirm'), true, 'the dialog was shown, then the re-check refused');
+  assert.equal(f.events.some(e => e[0] === 'source-close'), false);
+});
+test('recovered incomplete originals can be closed at once behind a confirmation, then recording works', async () => {
   const f = fixture();
   f.setSnapshot({ episodeId:'recovered', phase:'stopped', recovered:true, allSourcesComplete:false });
-  assert.equal(f.controller.sourceStatus().incompleteOverrideInMs,60*60*1000+1);
-  f.advance(60*60*1000);
-  assert.equal(f.controller.sourceStatus().incompleteOverrideInMs,1);
-  f.advance(1); f.setConfirm(true);
   assert.equal(f.controller.sourceStatus().incompleteOverrideInMs,0);
+  assert.equal((await f.controller.closeSources()).ok,false); // declined confirm keeps it open
+  f.setConfirm(true);
   assert.equal((await f.controller.closeSources()).ok,true);
   assert.deepEqual(f.events.slice(-2),['confirm',['source-close','recovered']]);
+  assert.equal((await f.controller.begin()).ok,true);
+});
+const {closePolicy,closeDialog}=require('../desktop/source-controller.cjs');
+const G='A'.repeat(22);
+const saved=(over={})=>({episodeId:'e',phase:'stopped',allSourcesComplete:false,incompleteOverrideInMs:3e6,
+  sources:[{participantId:'host',label:'Host',phase:'complete',idleMs:0},{participantId:G,label:'Ann',phase:'recording',idleMs:1000}],...over});
+const here=[{alive:true,revoked:false,phase:'admitted',session:{id:G,name:'Ann'}}];
+test('close policy table',()=>{
+  assert.equal(closePolicy({busy:true,state:saved(),guests:[]}).kind,'block');
+  let p=closePolicy({state:saved(),guests:here});
+  assert.deepEqual([p.kind,p.canClose,p.incomplete],['ask',false,[{id:G,label:'Ann',connected:true}]]);
+  assert.deepEqual(closeDialog(p).buttons,['Keep BlastCast open']);
+  p=closePolicy({state:saved(),guests:[]}); assert.equal(p.canClose,true); // gone
+  assert.deepEqual(closeDialog(p).buttons,['Keep BlastCast open','Close and keep partial originals']);
+  p=closePolicy({state:saved({sources:[saved().sources[0],{...saved().sources[1],idleMs:121000}]}),guests:here}); assert.equal(p.canClose,true); // silent >2 min
+  p=closePolicy({state:saved({incompleteOverrideInMs:0}),guests:here}); assert.equal(p.canClose,true); // hour elapsed
+  p=closePolicy({state:saved({recovered:true}),guests:here}); assert.equal(p.canClose,true);
+  assert.equal(closePolicy({state:saved({allSourcesComplete:true}),guests:[]}).kind,'idle');
+  assert.equal(closePolicy({state:saved({closing:true}),guests:[]}).kind,'block');
+  // an earlier take that failed marks the guest incomplete; fresh uploads from a new take still count as connected
+  p=closePolicy({state:saved({sources:[saved().sources[0],{...saved().sources[1],phase:'incomplete',idleMs:500}]}),guests:here});
+  assert.equal(p.canClose,false); assert.equal(p.incomplete[0].connected,true);
+});
+test('close-and-keep calls closeEpisode only and refuses while a guest can still deliver',async()=>{
+  const f=fixture(); await f.controller.begin(); await f.controller.finish('episode');
+  assert.equal((await f.controller.closeForQuit()).ok,true); // fixture guests carry no source ids, so nobody can deliver
+  assert.deepEqual(f.events.at(-1),['source-close','episode']);
+  assert.deepEqual(Object.keys(f.sources).sort(),['beginEpisode','closeEpisode','status','stopEpisode']); // no delete API exists
+  const g=fixture(); g.setSnapshot(saved({sources:[{participantId:'guest',label:'Guest',phase:'recording',idleMs:500}]}));
+  assert.equal(g.controller.closeAdvice().canClose,false);
+  assert.equal((await g.controller.closeForQuit()).ok,false);
+  assert.equal(g.events.some(e=>e[0]==='source-close'),false);
 });
 test('verified originals permit a subsequent recording without an incomplete-source confirmation', async () => {
   const f = fixture();
