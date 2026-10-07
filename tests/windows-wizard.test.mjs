@@ -20,13 +20,17 @@ test('release removes exact owned paths, blocks installed MSI/NSIS and offers al
   assert.match(script, /SetCompressor \/SOLID zlib/);
   for (const page of ['WELCOME', 'LICENSE', 'DIRECTORY', 'INSTFILES', 'FINISH']) assert.match(script, new RegExp(`MUI_PAGE_${page}`));
   assert.match(script, /MsiEnumRelatedProductsW/);
-  assert.doesNotMatch(script, /ExecWait|msiexec|RMDir \/r|Delete "\$APPDATA|Delete "\$LOCALAPPDATA|ExecShell/);
+  // ClaudeBWAI — einh 4 Oct: exactly one ExecWait, the in-place old uninstaller from $PLUGINSDIR; nothing else may spawn.
+  assert.doesNotMatch(script, /msiexec|RMDir \/r|Delete "\$APPDATA|Delete "\$LOCALAPPDATA|ExecShell/);
+  assert.equal(script.split('\n').filter(l => /ExecWait/.test(l)).length, 1);
+  assert.match(script, /^ExecWait '"\$PLUGINSDIR\\old-uninstall\.exe" _\?=/m);
   assert.match(script, /Delete "\$INSTDIR\\resources\\app\\index.js"/);
   assert.match(script, /IfSilent silent_not_supported/);
   assert.match(script, /WriteUninstaller/);
 });
 test('draft review wizard cannot install an application or touch installation registry', () => {
   const script = renderWizard({ mode: 'review', version: '0.1.0', files: ['BlastCast.exe'], payload: 'C:\\fixture', output: 'C:\\review.exe', icon: 'C:\\icon.ico', termsFile: 'C:\\draft.txt' });
+  assert.doesNotMatch(script, /ExecWait/);
   assert.doesNotMatch(script, /\nFile |WriteUninstaller|WriteReg|DeleteReg|CreateShortcut|MsiEnumRelatedProductsW/);
   assert.match(script, /REVIEW ONLY/);
 });

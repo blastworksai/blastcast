@@ -1,5 +1,5 @@
 // Authored by CodexBWAI. Local capture plus an explicitly enabled loopback guest server.
-const { app, BrowserWindow, desktopCapturer, nativeImage, clipboard, dialog, ipcMain, protocol, session, shell, safeStorage, systemPreferences } = require('electron');
+const { app, BrowserWindow, Menu, desktopCapturer, nativeImage, clipboard, dialog, ipcMain, protocol, session, shell, safeStorage, systemPreferences } = require('electron');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const path = require('node:path');
@@ -20,7 +20,10 @@ const { createGuestAccess } = require('./guest-access.cjs');
 const { createGuestSettings } = require('./guest-settings.cjs');
 const { createGuestWizard } = require('./guest-wizard.cjs');
 const { createDirectAccess } = require('./direct-access.cjs');
-const { createLicenseStore } = require('./license-store.cjs');
+// ClaudeBWAI — einh 5 Oct: Mac App Store flavour. license-store.cjs/license-key.cjs are not packaged under --mas, so they load only in the non-MAS branch below.
+const { isMas, createMasLicenseStore, helperPath } = require('./mas-flavour.cjs');
+const { installLicencesMenu } = require('./licences-window.cjs');
+const mas = isMas();
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: {
   standard: true, secure: true, supportFetchAPI: true,
@@ -49,12 +52,15 @@ const assets = new Map([
   ['/admission.css', 'text/css'], ['/admission-ui.js', 'text/javascript'], ['/media-denial.js', 'text/javascript'], ['/desktop-capture-guard.js', 'text/javascript'],
     ['/source-protocol.js', 'text/javascript'], ['/source-bitrate.js', 'text/javascript'], ['/source-capture.js', 'text/javascript'], ['/source-session.js', 'text/javascript'], ['/source-outbox.js', 'text/javascript'], ['/source-limits.js', 'text/javascript'], ['/source-recovery.js', 'text/javascript'],
   ['/host-calls.js', 'text/javascript'], ['/peer-call.js', 'text/javascript'], ['/audio-mix.js', 'text/javascript'],
-  ['/session-diagnostics.js', 'text/javascript'], // ClaudeBWAI — session diagnostics log (studio only)
-  // ClaudeBWAI — host camera background (same offline BodyPix files the guest page serves).
-  ['/camera-background.js', 'text/javascript'], ['/bodypix/tf.min.js', 'text/javascript'], ['/bodypix/body-pix.min.js', 'text/javascript'],
-  ['/bodypix/model-stride16.json', 'application/json'], ['/bodypix/group1-shard1of1.bin', 'application/octet-stream'],
+  ['/session-diagnostics.js', 'text/javascript'], ['/chat-ui.js', 'text/javascript'], // ClaudeBWAI — einh 4-5 Oct: live chat (studio Chat tab)
+  // ClaudeBWAI — session diagnostics log (studio only)
+  // ClaudeBWAI — host camera background (same offline MediaPipe files the guest page serves; wasm must be application/wasm for instantiateStreaming).
+  ['/camera-background.js', 'text/javascript'], ['/mediapipe/vision_bundle.mjs', 'text/javascript'],
+  ['/mediapipe/wasm/vision_wasm_internal.js', 'text/javascript'], ['/mediapipe/wasm/vision_wasm_nosimd_internal.js', 'text/javascript'],
+  ['/mediapipe/wasm/vision_wasm_internal.wasm', 'application/wasm'], ['/mediapipe/wasm/vision_wasm_nosimd_internal.wasm', 'application/wasm'],
+  ['/mediapipe/selfie_segmenter.tflite', 'application/octet-stream'],
 ]);
-const csp = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const csp = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 // ClaudeBWAI — the decision lives in media-access.cjs; a macOS denial skips BlastCast's own dialog.
 async function authorizePreview() {
@@ -79,8 +85,15 @@ async function authorizePreview() {
 }
 
 app.whenReady().then(async () => {
-  const publicKey = await fs.readFile(path.join(__dirname, '../assets/licensing/public-key.txt'), 'utf8');
-  licenseStore = createLicenseStore({ directory: app.getPath('userData'), safeStorage, publicKey });
+  // ClaudeBWAI — einh 5 Oct: under MAS the purchase is the licence; no key file, no key code.
+  if (mas) licenseStore = createMasLicenseStore();
+  else {
+    const { createLicenseStore } = require('./license-store.cjs');
+    const publicKey = await fs.readFile(path.join(__dirname, '../assets/licensing/public-key.txt'), 'utf8');
+    licenseStore = createLicenseStore({ directory: app.getPath('userData'), safeStorage, publicKey });
+  }
+  // ClaudeBWAI — einh 5 Oct: BlastCast > Licences... (darwin only; the function returns null elsewhere).
+  installLicencesMenu({ Menu, BrowserWindow, app, files: { electron: path.join(process.resourcesPath, 'LICENSE'), chromium: path.join(process.resourcesPath, 'LICENSES.chromium.html') }, helperBundled: mas });
   await licenseStore.load();
   const activated = () => licenseStore.active();
   const local = session.fromPartition('blastcast-local');
@@ -90,8 +103,7 @@ app.whenReady().then(async () => {
   await local.protocol.handle('app', async request => {
     const url = new URL(request.url);
     const mime = assets.get(url.pathname);
-    const modelQuery = url.pathname === '/bodypix/model-stride16.json' && url.search === '?tfjs-format=file';
-    if (url.host !== 'studio' || request.method !== 'GET' || !mime || (url.search && !modelQuery)) return new Response('Not found', { status: 404 });
+    if (url.host !== 'studio' || request.method !== 'GET' || !mime || url.search) return new Response('Not found', { status: 404 });
     try {
       return new Response(await fs.readFile(path.join(__dirname, '../dist', url.pathname.slice(1))), {
         headers: { 'Content-Type': mime, 'Content-Security-Policy': csp, 'X-Content-Type-Options': 'nosniff' },
@@ -106,25 +118,33 @@ app.whenReady().then(async () => {
   app.on('web-contents-created', (_event, contents) => { if (contents.session === local) displayPermission.watch(contents); });
   local.setPermissionRequestHandler((contents, permission, callback, details) => displayPermission.decide(contents, permission, callback, details));
   local.setPermissionCheckHandler((contents, permission, origin, details) => displayPermission.check(contents, permission, origin, details));
-  const displayPicker = installDisplayPicker({session:local,getWindow:()=>window,BrowserWindow,desktopCapturer,icon:path.join(__dirname,'../assets/brand/Blastworks-Cast-256.png'),authorized:activated,serve:displayPermission.serve});
+  const displayPicker = installDisplayPicker({session:local,getWindow:()=>window,BrowserWindow,desktopCapturer,icon:path.join(__dirname,'../assets/brand/Blastworks-Cast-256.png'),authorized:activated,serve:displayPermission.serve,
+    screenBlocked: () => screenBlockedMessage({ platform: process.platform, getStatus: kind => systemPreferences.getMediaAccessStatus(kind) })});
   // ClaudeBWAI — Share screen opens the picker through this call first; getDisplayMedia only collects the armed pick.
-  registerBridge(ipcMain, () => window?.webContents, { chooseScreen: createChooseScreen({ permission: displayPermission, picker: displayPicker, getContents: () => window?.webContents,
-    screenBlocked: () => screenBlockedMessage({ platform: process.platform, getStatus: kind => systemPreferences.getMediaAccessStatus(kind) }) }) }, activated);
+  registerBridge(ipcMain, () => window?.webContents, { chooseScreen: createChooseScreen({ permission: displayPermission, picker: displayPicker, getContents: () => window?.webContents }) }, activated);
+  // ClaudeBWAI — einh 5 Oct: the releases link is required only outside the Mac App Store build.
+  const releases = mas ? null : require('./releases-link.cjs');
   let guests;
   const directAccess = createDirectAccess({
     journalPath: path.join(app.getPath('userData'), 'direct-access-lease.json'),
     beforeLeaseCleanup: async () => { await guests?.stop(); },
   });
   await directAccess.recover();
+  // ClaudeBWAI — einh 5 Oct: the folder survives relaunch in every build; MAS also keeps security-scoped bookmarks (destination.cjs).
   const destination = createDestination({
-    pick: async () => {
+    file: path.join(app.getPath('userData'), 'recording-folder.json'),
+    pick: async (opts = {}) => {
       const result = await dialog.showOpenDialog(window, {
-        title: 'Choose a recording folder', properties: ['openDirectory', 'createDirectory'],
+        title: 'Choose a recording folder', properties: ['openDirectory', 'createDirectory'], ...opts,
       });
-      return result.canceled ? null : result.filePaths[0];
+      if (result.canceled) return null;
+      return opts.securityScopedBookmarks ? { folder: result.filePaths[0], dialogResult: result } : result.filePaths[0];
     },
     open: folder => shell.openPath(folder),
+    ...(mas ? { bookmarks: { create: r => r.bookmarks?.[0] || null, start: b => app.startAccessingSecurityScopedResource(b) } } : {}),
   });
+  await destination.load(); // before the recording or source stores read destination.selectedFolder()
+  app.on('will-quit', () => destination.dispose());
   const library = createRecordingLibrary({file:path.join(app.getPath('userData'), 'recording-library.json'),open:file=>shell.openPath(file)});
   const preferences = createStudioPreferences({directory:app.getPath('userData')});
   const recording = createRecordingStore({ folder: destination.selectedFolder, open: file => shell.openPath(file), onFinalized:entry=>library.add(entry) });
@@ -174,7 +194,9 @@ app.whenReady().then(async () => {
   guests = createGuestServer({ directory: path.join(__dirname, '../dist'), sources });
   let guestGeneration = 0;
   let guestAccess;
+  // ClaudeBWAI — einh 5 Oct: under MAS the tunnel uses the signed ssh helper inside the bundle.
   const tunnel = createFreeTunnel({ directory: path.join(app.getPath('userData'), 'free-tunnel'),
+    ...(mas ? { executable: helperPath({ resourcesPath: process.resourcesPath }) } : {}),
     onLost: message => { void guestAccess.lost(message).catch(() => {}); } });
   guestAccess = createGuestAccess({guests,directAccess,tunnel,onConfigured:()=>{guestGeneration++;}});
   let guestWizard;
@@ -219,7 +241,13 @@ app.whenReady().then(async () => {
   });
   registerRecordingBridge(ipcMain, () => window?.webContents, { ...recording, finish: coordinator.finish, abort: coordinator.abort, diagnostics: sessionDiagnostics.record }, activated);
   registerSourceBridge(ipcMain, () => window?.webContents, sources, activated);
-  registerGuestBridge(ipcMain, () => window?.webContents, { ...guests, configure: configureGuestAccess, copyInvite: id => {
+  registerGuestBridge(ipcMain, () => window?.webContents, { ...guests, configure: configureGuestAccess,
+    // ClaudeBWAI — einh 4-5 Oct: host chat while BlastCast is in the background: taskbar flash (Windows/Linux) or dock badge (macOS). Count only; no text.
+    chatAttention: count => {
+      if (process.platform === 'darwin') app.dock?.setBadge(count > 0 ? String(count) : '');
+      else if (window && !window.isDestroyed()) window.flashFrame(count > 0);
+      return { ok: true };
+    }, copyInvite: id => {
     const current = guests.status();
     const found = current.ok ? current.invites.find(i => i.id === id) : null;
     if (!found) return { ok: false, message: 'That invitation is no longer open.' };
@@ -269,8 +297,9 @@ app.whenReady().then(async () => {
     } finally { folderOperation = false; }
   };
   registerBridge(ipcMain, () => window?.webContents, {
-    appInfo:()=>({version:app.getVersion(),updates:'https://github.com/blastworksai/blastcast/releases'}),
-    openUpdates:async()=>{try{await shell.openExternal('https://github.com/blastworksai/blastcast/releases');return {ok:true};}catch{return {ok:false,message:'GitHub releases could not open. Visit github.com/blastworksai/blastcast/releases in your browser.'};}},
+    // ClaudeBWAI — einh 5 Oct: under MAS updates come only through the store; nothing opens and no URL is offered.
+    appInfo:()=>({version:app.getVersion(),updates:releases?releases.releasesUrl:null}),
+    openUpdates:async()=>releases?releases.openReleases(shell):{ok:false,message:'Updates come through the App Store.'},
     listRecordings:library.list, getSceneBackdrops:preferences.getBackdrops, loadDevicePreferences:preferences.loadDevices,
     sourceStatus: coordinator.sourceStatus,
     guestStatus: async () => {

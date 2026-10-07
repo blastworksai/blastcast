@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BlastCast · Guest preview</title><link rel="stylesheet" href="/guest.css"><script src="/bodypix/tf.min.js"></script><script src="/bodypix/body-pix.min.js"></script><script type="module" src="/guest.js"></script></head>
+  <title>BlastCast · Guest preview</title><link rel="stylesheet" href="/guest.css"><script type="module" src="/guest.js"></script></head>
 <body>
   <header><img src="/Blastworks-Cast-256.png" width="40" height="40" alt=""><h1>BlastCast</h1><span id="guest-mode">Guest preview</span></header>
   <main>
@@ -15,6 +15,10 @@
           <video id="guest-host" autoplay playsinline aria-label="Live recording view from the host"></video>
           <button id="guest-play-audio" class="secondary" hidden>Play call audio</button>
           <p id="guest-call-status" class="status" role="status">The call starts after admission with your preview on.</p>
+        </section>
+        <section id="guest-chat-panel" class="guest-chat" aria-labelledby="guest-chat-heading" hidden>
+          <h2 id="guest-chat-heading">Chat with the host and guests</h2>
+          <div id="guest-chat-root"></div>
         </section>
         <section id="guest-screen-panel" hidden aria-labelledby="guest-screen-heading"><h2 id="guest-screen-heading">Host screen share</h2><video id="guest-screen" autoplay playsinline muted aria-label="Shared host screen"></video></section>
         <div class="actions"><button id="guest-share-screen" class="secondary" disabled>Share screen</button><button id="guest-stop-screen" class="secondary" disabled>Stop sharing</button></div><p id="guest-screen-status" class="status" role="status">Screen sharing is off. Only share a screen you want the host to see and potentially record.</p>

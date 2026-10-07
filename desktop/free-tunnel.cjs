@@ -25,8 +25,10 @@ async function pinnedHostsFile(file) {
 }
 
 function createFreeTunnel({ directory, spawn = spawnChild, platform = process.platform, onLost = () => {},
-  shippedKnownHosts = SHIPPED_KNOWN_HOSTS, startupTimeoutMs = START_TIMEOUT_MS, stopTimeoutMs = STOP_TIMEOUT_MS } = {}) {
+  shippedKnownHosts = SHIPPED_KNOWN_HOSTS, executable: injectedExecutable, startupTimeoutMs = START_TIMEOUT_MS, stopTimeoutMs = STOP_TIMEOUT_MS } = {}) {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || /[\x00-\x1f\x7f%]/.test(directory) || directory.includes('${')) throw new Error('A private absolute tunnel directory is required.');
+  // ClaudeBWAI — einh 5 Oct: the Mac App Store build injects its bundled ssh helper; it must be an absolute path.
+  if (injectedExecutable !== undefined && (typeof injectedExecutable !== 'string' || !(platform === 'win32' ? path.win32 : path.posix).isAbsolute(injectedExecutable) || /[\x00-\x1f\x7f]/.test(injectedExecutable))) throw new Error('The tunnel executable must be an absolute path.');
   let active = null, generation = 0;
   let current = { phase: 'off', message: 'Guest tunnel is off.', origin: null };
   const status = () => ({ ...current });
@@ -78,8 +80,8 @@ function createFreeTunnel({ directory, spawn = spawnChild, platform = process.pl
       await fs.writeFile(config, '', { mode: 0o600 }); await fs.chmod(config, 0o600);
       const handle = await fs.open(hosts, 'a', 0o600); await handle.close(); await fs.chmod(hosts, 0o600);
       if (active !== run || run.failed || run.closed) { release(run); return result; }
-      const executable = platform === 'win32' ? path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : '/usr/bin/ssh';
-      if (platform === 'win32' && !path.win32.isAbsolute(executable)) throw new Error('Invalid system SSH path');
+      const executable = injectedExecutable !== undefined ? injectedExecutable : platform === 'win32' ? path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe') : '/usr/bin/ssh';
+      if (injectedExecutable === undefined && platform === 'win32' && !path.win32.isAbsolute(executable)) throw new Error('Invalid system SSH path');
       const pinned = await pinnedHostsFile(shippedKnownHosts);
       if (active !== run || run.failed || run.closed) { release(run); return result; }
       // ClaudeBWAI — fail closed: the pinned host key is mandatory, never trust-on-first-use. Nothing is spawned.
@@ -112,7 +114,7 @@ function createFreeTunnel({ directory, spawn = spawnChild, platform = process.pl
       };
       child.stdout?.on('data', receive); child.stderr?.on('data', receive);
       child.once('error', error => {
-        fail(run, error.code === 'ENOENT' ? 'OpenSSH is not installed in the system location. Enable the operating system’s OpenSSH client, then retry.' : 'The guest tunnel could not start. Check the operating system’s OpenSSH client.');
+        fail(run, error.code === 'ENOENT' && injectedExecutable !== undefined ? "BlastCast's guest tunnel helper is missing; reinstall BlastCast." : error.code === 'ENOENT' ? 'OpenSSH is not installed in the system location. Enable the operating system’s OpenSSH client, then retry.' : 'The guest tunnel could not start. Check the operating system’s OpenSSH client.');
         if (!child.pid) release(run);
       });
       child.once('close', () => {

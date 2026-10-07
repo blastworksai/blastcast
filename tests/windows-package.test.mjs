@@ -22,11 +22,12 @@ async function fixture(t) {
     'runtime/LICENSES.chromium.html': '<p>fake notices</p>', 'runtime/ffmpeg.dll': 'fake library',
     'runtime/resources/default_app.asar': 'fake upstream application',
   })) { const file = path.join(root, name); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, content); }
-  for (const name of ['invite-automation.js', 'invite-list.js', 'guest-invite.js', 'recording-library.js', 'screen-share.js', 'studio-shell.js', 'tokens.css', 'blastcast.css', 'logo-icon.svg', 'fonts/BlastworksSans-Regular.woff2', 'fonts/BlastworksSans-SemiBold.woff2', 'fonts/BlastworksSans-ExtraBold.woff2', 'fonts/BlastworksSans-UNLICENSE.txt']) { const f = path.join(app, 'dist', name); await mkdir(path.dirname(f), {recursive:true}); await writeFile(f, 'fixture'); }
-  for (const name of ['free-tunnel', 'guest-access', 'guest-settings', 'guest-wizard', 'recording-library', 'studio-preferences', 'display-picker', 'media-access', 'boundary', 'destination', 'recording', 'webm', 'guest-http', 'guest-rate-limit', 'guest-static', 'guest-route', 'guest-readiness', 'guest-status', 'guest-lifecycle', 'guest-api', 'guest-api-source', 'direct-access', 'relay-config', 'admission', 'signaling', 'sources', 'source-recovery', 'source-limits', 'source-import', 'source-controller', 'license-key', 'license-store']) await writeFile(path.join(app, `desktop/${name}.cjs`), '// fixture module');
+  for (const name of ['invite-automation.js', 'chat-ui.js', 'invite-list.js', 'guest-invite.js', 'recording-library.js', 'screen-share.js', 'studio-shell.js', 'tokens.css', 'blastcast.css', 'logo-icon.svg', 'fonts/BlastworksSans-Regular.woff2', 'fonts/BlastworksSans-SemiBold.woff2', 'fonts/BlastworksSans-ExtraBold.woff2', 'fonts/BlastworksSans-UNLICENSE.txt']) { const f = path.join(app, 'dist', name); await mkdir(path.dirname(f), {recursive:true}); await writeFile(f, 'fixture'); }
+  for (const name of ['free-tunnel', 'guest-access', 'guest-settings', 'guest-wizard', 'recording-library', 'studio-preferences', 'display-picker', 'media-access', 'boundary', 'destination', 'licences-window', 'mas-flavour', 'releases-link', 'recording', 'webm', 'guest-http', 'guest-rate-limit', 'guest-static', 'guest-route', 'guest-readiness', 'guest-status', 'guest-lifecycle', 'guest-api', 'guest-api-source', 'direct-access', 'relay-config', 'admission', 'chat-room', 'session-diagnostics', 'signaling', 'sources', 'source-recovery', 'source-limits', 'source-import', 'source-controller', 'license-key', 'license-store']) await writeFile(path.join(app, `desktop/${name}.cjs`), '// fixture module');
+  await mkdir(path.join(app,'assets/mediapipe/wasm'),{recursive:true}); await writeFile(path.join(app,'assets/mediapipe/wasm/vision_wasm_internal.wasm'),'vendored source copy'); // ClaudeBWAI — must not ship twice
   await mkdir(path.join(app,'assets/licensing'),{recursive:true}); await writeFile(path.join(app,'assets/licensing/public-key.txt'),'public fixture'); await writeFile(path.join(app,'assets/localhost-run-known-hosts.txt'),'localhost.run ssh-ed25519 FIXTURE\n');
   for (const name of ['recording-status.js', 'source-protocol.js', 'source-bitrate.js', 'source-capture.js', 'source-session.js', 'source-outbox.js', 'source-limits.js', 'source-limits.json', 'source-recovery.js', 'host-calls.js', 'guest-call.js', 'peer-call.js', 'audio-mix.js', 'admission-ui.js', 'admission.css', 'scenes.js', 'scene-controls.js', 'screen-share-attention.js', 'program-output.js', 'studio.css', 'invites.js', 'relay-input.js', 'recording.js', 'preview.js', 'device-access.js', 'camera-background.js', 'guest.html', 'guest.css', 'readiness.html', 'readiness.js', 'readiness.css', 'Blastworks-Cast-256.png']) await writeFile(path.join(app, 'dist', name), 'fixture');
-  for (const name of ['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt']) { const f = path.join(app, `dist/bodypix/${name}`); await mkdir(path.dirname(f), {recursive:true}); await writeFile(f, 'fixture'); }
+  for (const name of ['vision_bundle.mjs', 'selfie_segmenter.tflite', 'NOTICE.txt', 'wasm/vision_wasm_internal.js', 'wasm/vision_wasm_internal.wasm', 'wasm/vision_wasm_nosimd_internal.js', 'wasm/vision_wasm_nosimd_internal.wasm']) { const f = path.join(app, `dist/mediapipe/${name}`); await mkdir(path.dirname(f), {recursive:true}); await writeFile(f, 'fixture'); }
   for (const name of ['cloudflare-tunnel-ready', 'cloudflare-route-form', 'cloudflare-route-ready', 'expressturn-fields']) { const f = path.join(app, `dist/instructions/${name}.png`); await mkdir(path.dirname(f), {recursive:true}); await writeFile(f, 'fixture'); }
   for (const name of ['2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8']) await writeFile(path.join(app, `assets/scenes/defaults/${name}.png`), 'fixture');
   for (const name of ['1cam', '2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8']) await writeFile(path.join(app, `dist/${name}.png`), 'fixture');
@@ -49,7 +50,8 @@ test('Windows development layout preserves runtime and notices, ships compiled a
   assert.ok(paths.includes('resources/app/desktop/guest-wizard.cjs'));
   assert.ok(paths.includes('resources/app/assets/scenes/defaults/1cam.png'));
   assert.ok(paths.includes('resources/app/dist/guest.js'));
-  assert.ok(paths.includes('resources/app/dist/bodypix/group1-shard1of1.bin'));
+  assert.ok(paths.includes('resources/app/dist/mediapipe/selfie_segmenter.tflite'));
+  assert.ok(!paths.some(p => p.startsWith('resources/app/assets/mediapipe/')), 'the vendored MediaPipe source copy ships only once, as dist/mediapipe');
   assert.ok(paths.includes('resources/app/dist/readiness.js'));
   assert.ok(!paths.some(p => /node_modules|\.env|\.evidence|electron\.exe/.test(p)));
   for (const entry of inventory.payload) assert.equal(entry.sha256, await hashFile(path.join(f.output, entry.path)));
@@ -101,8 +103,8 @@ test('archive guard rejects modified bytes and unsupported targets without extra
 });
 
 test('offline background processor files are mandatory package inputs', async t => {
-  for (const missing of ['dist/camera-background.js', 'dist/bodypix/tf.min.js', 'dist/bodypix/body-pix.min.js',
-    'dist/bodypix/model-stride16.json', 'dist/bodypix/group1-shard1of1.bin', 'dist/bodypix/NOTICE.txt']) {
+  for (const missing of ['dist/camera-background.js', 'dist/mediapipe/vision_bundle.mjs',
+    'dist/mediapipe/wasm/vision_wasm_internal.wasm', 'dist/mediapipe/selfie_segmenter.tflite', 'dist/mediapipe/NOTICE.txt']) {
     const f = await fixture(t); await rm(path.join(f.app, missing));
     await assert.rejects(assembleWindowsApp(f), /ENOENT/);
     assert.ok(!(await readdir(f.root)).includes('output'), missing);

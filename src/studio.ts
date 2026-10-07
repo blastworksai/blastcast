@@ -5,7 +5,7 @@ import { mountRecordingLibrary } from './recording-library.js';
 import { SourceSession } from './source-session.js';
 import type { SourceStatus } from './source-protocol.js';
 import { Recording, RECORDING_MIME_TYPE } from './recording.js';
-import { DrawMeter, SessionDiagnosticsLog, recorderInfo } from './session-diagnostics.js';
+import { DrawMeter, SessionDiagnosticsLog, recorderInfo, logCompositorEvent, type SceneBackend, type CompositorReason } from './session-diagnostics.js';
 import { originalsWaitMessage, recordingRows } from './recording-status.js';
 import './invites.js';
 import type { FolderResult, LicenseStatus } from './bridge.js';
@@ -14,7 +14,7 @@ import { Preview, deviceNoticeText, reconnectLabel, type DeviceKind, type Previe
 import { denialMessage } from './media-denial.js';
 import { CameraBackground, type CameraBackgroundMode } from './camera-background.js';
 import { mountSceneControls } from './scene-controls.js';
-import { CANVAS_H, CANVAS_W, DEFAULT_SCENES, type DrawableSource } from './scenes.js';
+import { CANVAS_H, CANVAS_W, DEFAULT_SCENES, type DrawableSource, type FrameCompositor, createGlCompositor, watchGlContext } from './scenes.js';
 import { HostCalls } from './host-calls.js';
 import { GuestScreenAttention } from './screen-share-attention.js';
 import { composeProgramOutput } from './program-output.js';
@@ -43,24 +43,35 @@ function element<T extends HTMLElement>(id: string): T {
   return found as T;
 }
 const studioShell = initStudioShell();
-const activationLock = element('activation-lock');
+// Absent from the Mac App Store bundle (built with --mas); every use below tolerates that.
+const maybe = <T extends HTMLElement>(id: string): T | null => document.getElementById(id) as T | null;
+const activationLock = maybe('activation-lock');
 const studio = element('studio');
 const settingsDialog = element<HTMLDialogElement>('studio-settings');
-const activationEntry = element('activation-entry');
-const activationCurrent = element('activation-current');
-const activationKey = element<HTMLTextAreaElement>('activation-key');
-const activateLicense = element<HTMLButtonElement>('activate-license');
-const deactivateLicense = element<HTMLButtonElement>('deactivate-license');
+const activationEntry = maybe('activation-entry');
+const activationCurrent = maybe('activation-current');
+const activationKey = maybe<HTMLTextAreaElement>('activation-key');
+const activateLicense = maybe<HTMLButtonElement>('activate-license');
+const deactivateLicense = maybe<HTMLButtonElement>('deactivate-license');
 const licensedSettings = [...settingsDialog.querySelectorAll<HTMLElement>('.setup-card:not(#activation-card):not(#software-card), .readiness')];
 function showLicense(value: LicenseStatus): void {
   const active = value.active;
-  studio.inert = !active; activationLock.hidden = active;
+  studio.inert = !active;
+  if (activationLock) activationLock.hidden = active;
   licensedSettings.forEach(section => { section.inert = !active; });
-  activationEntry.hidden = active; activationCurrent.hidden = !active;
-  if (active) {
-    element('activation-holder').textContent = value.license.holder;
-    element('activation-kind').textContent = `${value.license.kind} key`;
+  if (value.active && value.license.kind === 'app-store') {
+    // Mac App Store: the store is the licence. No key section, purchase text or GitHub releases link.
+    for (const id of ['activation-lock', 'activation-card', 'check-updates', 'update-status']) document.getElementById(id)?.remove();
+    return;
   }
+  if (activationEntry) activationEntry.hidden = active;
+  if (activationCurrent) activationCurrent.hidden = !active;
+  if (value.active && value.license.kind !== 'app-store') {
+    const holder = maybe('activation-holder'), kind = maybe('activation-kind');
+    if (holder) holder.textContent = value.license.holder;
+    if (kind) kind.textContent = `${value.license.kind} key`;
+  }
+  if (!maybe('activation-status')) return;
   status('activation-status', value.message ?? (active ? 'BlastCast is activated on this computer.' : 'Enter an activation key to unlock the studio.'), Boolean(value.message));
   if (!active && !settingsDialog.open) settingsDialog.showModal();
 }
@@ -68,24 +79,24 @@ async function refreshLicense(): Promise<void> {
   try { showLicense(await window.blastcast.licenseStatus()); }
   catch { showLicense({ active:false, message:'Activation status could not be checked. Restart BlastCast and try again.' }); }
 }
-element('open-activation').addEventListener('click', () => { if (!settingsDialog.open) settingsDialog.showModal(); activationKey.focus(); });
-activateLicense.addEventListener('click', async () => {
-  activateLicense.disabled = true; status('activation-status', 'Checking activation key…');
+maybe('open-activation')?.addEventListener('click', () => { if (!settingsDialog.open) settingsDialog.showModal(); activationKey?.focus(); });
+activateLicense?.addEventListener('click', async () => {
+  if (activateLicense) activateLicense.disabled = true; status('activation-status', 'Checking activation key…');
   try {
-    const result = await window.blastcast.activateLicense(activationKey.value);
-    if (result.active) { activationKey.value = ''; status('activation-status', 'Activated. Restarting the studio…'); location.reload(); return; }
+    const result = await window.blastcast.activateLicense(activationKey?.value ?? '');
+    if (result.active) { if (activationKey) activationKey.value = ''; status('activation-status', 'Activated. Restarting the studio…'); location.reload(); return; }
     showLicense(result);
   } catch { status('activation-status', 'Activation could not be completed. Try again.', true); }
-  finally { activateLicense.disabled = false; }
+  finally { if (activateLicense) activateLicense.disabled = false; }
 });
-deactivateLicense.addEventListener('click', async () => {
-  deactivateLicense.disabled = true; status('activation-status', 'Deactivating…');
+deactivateLicense?.addEventListener('click', async () => {
+  if (deactivateLicense) deactivateLicense.disabled = true; status('activation-status', 'Deactivating…');
   try {
     const result = await window.blastcast.deactivateLicense();
     if (!result.active) { location.reload(); return; }
     showLicense(result);
   } catch { status('activation-status', 'BlastCast could not be deactivated. Try again.', true); }
-  finally { deactivateLicense.disabled = false; }
+  finally { if (deactivateLicense) deactivateLicense.disabled = false; }
 });
 void refreshLicense();
 const libraryContainer = document.createElement('section'); libraryContainer.id = 'recording-library'; element('recordings-pane').append(libraryContainer);
@@ -127,9 +138,9 @@ const recording = new Recording(window.blastcast, state => {
   }
   if (state.phase === 'starting') hasCompleted = false;
   // ClaudeBWAI — the session diagnostics log follows the recording: samples while recording, the end line once the outcome is known.
-  if (state.phase === 'recording' && state.episodeId) sessionLog.start(state.episodeId, canvas.height === 2160 ? 2160 : 1080);
+  if (state.phase === 'recording' && state.episodeId) { sessionLog.start(state.episodeId, canvas.height === 2160 ? 2160 : 1080); if (startupNote) logCompositorEvent(sessionLog, startupNote, activeBackend); }
   else if (state.phase === 'finalizing') sessionLog.pause();
-  else if (state.phase === 'complete' || state.phase === 'error') void sessionLog.stop(state.phase);
+  else if (state.phase === 'complete' || state.phase === 'error') { void sessionLog.stop(state.phase); selectBackend(); }
   showOriginals(latestSources);
 });
 let folderReady = false;
@@ -268,8 +279,7 @@ function renderPreview(state: PreviewState, stream: MediaStream | null): void {
     background.setSource(stream); // ClaudeBWAI — the processed camera feeds the preview, the scene and the host original
     element('preview-empty').hidden = Boolean(stream);
     video.toggleAttribute('data-live', Boolean(stream));
-    const composedCanvas = element<HTMLCanvasElement>('composed');
-    composedCanvas.style.display = 'block';
+    showBackendCanvas(); // ClaudeBWAI — einh 4 Oct (CP4c): the preview shows the active backend's canvas, never both
     if (stream) {
       const settings = stream.getVideoTracks()[0]?.getSettings() ?? {};
       element('resolution-label').textContent = `${settings.width ?? '?'} × ${settings.height ?? '?'}`;
@@ -346,7 +356,7 @@ async function reconnectDevice(kind: DeviceKind): Promise<void> {
 
 // ClaudeBWAI — a denied macOS permission becomes a visible error plus an Open System Settings button.
 const privacyButton = element<HTMLButtonElement>('open-privacy-settings');
-let privacyKind: 'camera' | 'microphone' | null = null;
+let privacyKind: 'camera' | 'microphone' | 'screen' | null = null;
 function hidePrivacyButton(): void { privacyKind = null; privacyButton.hidden = true; }
 async function showDenial(show: (text: string, error: boolean) => void): Promise<void> {
   let denial = denialMessage({ camera: 'unknown', microphone: 'unknown' });
@@ -455,8 +465,10 @@ function showGuestScreenAttention(active: boolean): void {
 shareSelect.addEventListener('change', () => { sourcesStale = true; guestScreenAttention.acknowledge(); showGuestScreenAttention(false); });
 // ClaudeBWAI — the picker comes first (main arms one grant on a pick); a cancel rejects quietly, as the picker cancel did.
 const share = new ScreenShare(async () => {
+  hidePrivacyButton();
   const chosen = await window.blastcast.chooseScreen();
-  if (chosen?.blocked === true && typeof chosen.message === 'string') throw new ScreenBlockedError(chosen.message);
+  // ClaudeBWAI — 3.6a: still blocked after macOS had its chance to ask: our message, plus the existing button pointed at Screen Recording.
+  if (chosen?.blocked === true && typeof chosen.message === 'string') { privacyKind = 'screen'; privacyButton.hidden = false; throw new ScreenBlockedError(chosen.message); }
   if (!chosen?.ok) throw new DOMException('Screen sharing was cancelled.', 'NotAllowedError');
   return navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:15,max:30}},audio:false});
 }, (stream,message) => {
@@ -665,6 +677,19 @@ open.addEventListener('click', async () => {
 });
 const canvas = element<HTMLCanvasElement>('composed');
 const ctx = canvas.getContext('2d', { alpha: false })!;
+// ClaudeBWAI — einh 4 Oct (CP4c-2): a canvas keeps the context type it first asked for, so WebGL2 draws on a second canvas.
+// The program stream (preview, recording, guests) always comes from the canvas of the chosen backend, and the backend
+// is never switched while a recording runs: MediaRecorder holds the track, and replaceProgramVideo only reaches calls.
+const glCanvas = document.createElement('canvas');
+glCanvas.width = canvas.width; glCanvas.height = canvas.height;
+glCanvas.className = canvas.className; glCanvas.setAttribute('aria-label', 'Composed scene preview'); glCanvas.style.display = 'none';
+canvas.after(glCanvas);
+let glCompositor: FrameCompositor | null = null;
+let glWatch: { dispose(): void } | null = null;
+let glDisabled = false; // WebGL2 missing, lost, or it failed a recording: Canvas 2D for the rest of the session
+let activeBackend: SceneBackend = 'canvas2d';
+let startupNote: CompositorReason | null = null; // why this recording starts on Canvas 2D, written to its diagnostics log
+const activeCanvas = (): HTMLCanvasElement => activeBackend === 'webgl2' ? glCanvas : canvas;
 const controlsContainer = element('scene-controls-container');
 let sceneStream: MediaStream | null = null;
 let renderAnimationId = 0;
@@ -684,19 +709,69 @@ function stopSceneStream() {
   }
 }
 
+function showBackendCanvas(): void {
+  canvas.style.display = activeBackend === 'webgl2' ? 'none' : 'block'; glCanvas.style.display = activeBackend === 'webgl2' ? 'block' : 'none';
+}
+function restartSceneStream(): void {
+  stopSceneStream();
+  if (attached) {
+    sceneStream = activeCanvas().captureStream(30);
+    void calls.replaceProgramVideo(sceneStream.getVideoTracks()[0] ?? null).catch(() => status('device-status', 'The new quality could not reach every guest. Ask them to Reconnect.', true));
+  }
+}
+function releaseGl(): void {
+  glWatch?.dispose(); glWatch = null;
+  try { glCompositor?.dispose(); } catch { /* the context is already gone */ }
+  glCompositor = null;
+}
+function switchBackend(next: SceneBackend, reason: CompositorReason | null): void {
+  if (next === activeBackend || recording.busy) return;
+  activeBackend = next; drawMeter.backend = next;
+  showBackendCanvas();
+  restartSceneStream();
+  if (reason) logCompositorEvent(sessionLog, reason, next);
+}
+function fallBackToCanvas2d(): void { glDisabled = true; startupNote = 'fallback-canvas2d'; releaseGl(); switchBackend('canvas2d', 'fallback-canvas2d'); }
+// Chosen at start, on a quality change, before a recording and after one; a no-op while a recording runs.
+function selectBackend(): void {
+  if (recording.busy) return;
+  if (!glDisabled && !glCompositor) {
+    glCompositor = createGlCompositor(glCanvas);
+    if (glCompositor) {
+      glWatch = watchGlContext(glCanvas, glCompositor, {
+        recording: () => recording.busy,
+        event: reason => logCompositorEvent(sessionLog, reason, 'webgl2'),
+        onLostIdle: fallBackToCanvas2d,
+        onLostTimeout: () => {
+          if (!recording.busy) { fallBackToCanvas2d(); return; }
+          glDisabled = true; startupNote = 'fallback-canvas2d'; // the next recording starts on Canvas 2D (selectBackend runs when this one ends)
+          logCompositorEvent(sessionLog, 'recording-failed', 'webgl2');
+          void recording.fail('The graphics card dropped the GPU compositor and it did not come back. Recording is incomplete; partial files are retained. The next recording uses the standard compositor.');
+        },
+      });
+    } else { glDisabled = true; startupNote = 'webgl2-unavailable'; }
+  }
+  if (glCompositor?.lost()) glDisabled = true;
+  if (glDisabled) { const had = Boolean(glCompositor); releaseGl(); if (had) startupNote = 'fallback-canvas2d'; }
+  if (glCompositor) { startupNote = null; switchBackend('webgl2', null); }
+  else switchBackend('canvas2d', 'fallback-canvas2d');
+}
+
 function setOutputQuality(height: 1080 | 2160): void {
   const width = height === 2160 ? 3840 : 1920;
   if (canvas.width !== width || canvas.height !== height) {
     stopSceneStream();
     canvas.width = width;
     canvas.height = height;
+    glCanvas.width = width; glCanvas.height = height; glCompositor?.resize(width, height);
     // ClaudeBWAI — Codex review of 68ea271 (P2): the guests' program video was the scene track just stopped; hand every call
     // the new one (replaceTrack on the video sender, no renegotiation). A one-device change no longer rebuilds the calls.
     if (attached) {
-      sceneStream = canvas.captureStream(30);
+      sceneStream = activeCanvas().captureStream(30);
       void calls.replaceProgramVideo(sceneStream.getVideoTracks()[0] ?? null).catch(() => status('device-status', 'The new quality could not reach every guest. Ask them to Reconnect.', true));
     }
   }
+  selectBackend();
   element('output-label').textContent = `Recording output ${width}×${height}`;
 }
 
@@ -755,12 +830,17 @@ async function renderLoop() {
   refreshSources(sourcesStale); sourcesStale = false;
   const hasValidFrame = frameValid;
 
+  if (activeBackend === 'webgl2' && glCompositor?.lost()) { scheduleRender(); return; } // the watch decides: restore, fall back, or fail
   try {
-    ctx.save();
-    ctx.setTransform(canvas.width / CANVAS_W, 0, 0, canvas.height / CANVAS_H, 0, 0);
     const drawStart = performance.now();
-    try { await controls.composeToCanvas(ctx); }
-    finally { ctx.restore(); drawMeter.add(performance.now() - drawStart); }
+    if (activeBackend === 'webgl2' && glCompositor) {
+      try { await controls.composeToCanvas(glCompositor); } finally { drawMeter.add(performance.now() - drawStart); }
+    } else {
+      ctx.save();
+      ctx.setTransform(canvas.width / CANVAS_W, 0, 0, canvas.height / CANVAS_H, 0, 0);
+      try { await controls.composeToCanvas(ctx); }
+      finally { ctx.restore(); drawMeter.add(performance.now() - drawStart); }
+    }
     if (gen === renderGeneration && selection === sceneSelection) {
       const changed = sceneReady !== hasValidFrame || statusSelection !== selection;
       sceneReady = hasValidFrame; statusSelection = selection;
@@ -779,6 +859,7 @@ async function renderLoop() {
   if (gen === renderGeneration) scheduleRender();
 }
 
+selectBackend();
 void renderLoop();
 
 function getRecordingStream(): MediaStream {
@@ -791,7 +872,7 @@ function getCallStream(deviceStream: MediaStream): MediaStream {
 
 function getSceneOutputStream(audioStream: MediaStream): MediaStream {
   if (!sceneStream) {
-    sceneStream = canvas.captureStream(30);
+    sceneStream = activeCanvas().captureStream(30);
   }
   return composeProgramOutput(sceneStream, audioStream);
 }
@@ -801,6 +882,7 @@ record.addEventListener('click', async () => {
   const stream = attached;
   preparingRecording = true; readiness();
   try {
+    selectBackend();
     await calls.resumeAudio();
     if (attached === stream && folderReady && sceneReady) await recording.start(getRecordingStream());
     void originals.poll();
@@ -903,4 +985,4 @@ void window.blastcast.getSceneBackdrops().then(loadBackdrops)
   .finally(() => { backdropBusy = false; updateBackdropRows(); });
 
 void window.blastcast.appInfo().then(info=>{element('app-version').textContent=info.version;});
-element('check-updates').addEventListener('click',async()=>{const result=await window.blastcast.openUpdates();status('update-status',result.ok?'The public BlastCast repository opened in your browser.':result.message??'The release page could not open.',!result.ok);});
+maybe('check-updates')?.addEventListener('click',async()=>{const result=await window.blastcast.openUpdates();status('update-status',result.ok?'The public BlastCast repository opened in your browser.':result.message??'The release page could not open.',!result.ok);});

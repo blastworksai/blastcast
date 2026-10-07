@@ -6,7 +6,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REDEEMPTION_KEY = /^[A-Za-z0-9_-]{43}$/;
 const SESSION_RE = /^[A-Za-z0-9_-]{43}$/;
 const headers = {
-  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+  'Content-Security-Policy': "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
   'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
   'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self)',

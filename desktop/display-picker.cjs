@@ -1,5 +1,6 @@
 // CodexBWAI — each screen share requires a fresh explicit selection in an isolated, scriptless picker.
 const { randomUUID } = require('node:crypto');
+const { SCREEN_BLOCKED_MESSAGE } = require('./media-access.cjs');
 const STUDIO_URL = 'app://studio/index.html';
 const PICKER_HOST = 'blastcast.invalid';
 const PICKER_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-src 'none'";
@@ -13,9 +14,10 @@ function pickerHtml(sources, nonce, truncated) {
   }).join('');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PICKER_CSP}"><title>Share a screen or window — BlastCast</title><style>body{margin:24px;background:#171717;color:#fff;font:16px system-ui}h1{font-size:23px}p{color:#ccc}main{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}a{display:flex;flex-direction:column;gap:10px;padding:12px;border:2px solid #555;border-radius:8px;color:white;text-decoration:none;overflow-wrap:anywhere}a:hover,a:focus{border-color:#ffab01;outline:2px solid #ffab01}img,.empty{width:100%;height:140px;object-fit:contain;background:#262626}.empty{display:grid;place-items:center}footer{margin:20px 0}footer a{display:inline-block}small{color:#ddd}</style></head><body><h1>Choose what to share</h1><p>Click a screen or window to start sharing it. Screen audio is not shared.</p><main>${cards || '<p>No screens or windows are available. Check system screen-recording permissions and try again.</p>'}</main>${truncated ? '<p>Only the first 200 sources are shown. Close unused windows if your source is missing.</p>' : ''}<footer><a href="https://blastcast.invalid/${nonce}/cancel">Cancel</a></footer></body></html>`;
 }
+// ClaudeBWAI — resolves {blocked:true,message} (never a source) when macOS Screen Recording stays blocked after the prompt path.
 // ClaudeBWAI — the picker opens from the studio's chooseScreen bridge call (boundary.cjs createDisplayPermission), BEFORE
 // getDisplayMedia; resolves the chosen source, or null on cancel, timeout, parent close/navigation or failure.
-function openPicker({ parent, stillTrusted, BrowserWindow, desktopCapturer, icon, timeoutMs, bindCancel = () => {} }) {
+function openPicker({ parent, stillTrusted, BrowserWindow, desktopCapturer, icon, timeoutMs, bindCancel = () => {}, screenBlocked = null, platform = process.platform }) {
   return new Promise(resolve => {
     const nonce = randomUUID(); let child = null, settled = false;
     const timer = setTimeout(() => finish(), Math.max(1000, Math.min(timeoutMs,120000)));
@@ -31,9 +33,16 @@ function openPicker({ parent, stillTrusted, BrowserWindow, desktopCapturer, icon
     parent.once('closed',cancel); parent.webContents.on('did-start-navigation',navigated);parent.webContents.once('destroyed',cancel);
     void (async () => {
       try {
-        const allSources = await desktopCapturer.getSources({types:['screen','window'],thumbnailSize:{width:320,height:180},fetchWindowIcons:false});
+        // ClaudeBWAI — 3.6a: getSources ALWAYS runs first, even with Screen Recording not granted: it is the call that makes macOS
+        // register BlastCast, list it in System Settings and show its own prompt (a status preflight alone shows nothing).
+        let allSources;
+        try { allSources = await desktopCapturer.getSources({types:['screen','window'],thumbnailSize:{width:320,height:180},fetchWindowIcons:false}); }
+        catch (error) { if (!screenBlocked) throw error; allSources = []; }
         if (settled) return;
         if (!stillTrusted()) { finish(); return; }
+        // Only after that does BlastCast decide: still not granted (or macOS handed back nothing) -> our message, never silence.
+        const blockedMessage = screenBlocked ? (screenBlocked() || (platform === 'darwin' && allSources.length === 0 ? SCREEN_BLOCKED_MESSAGE : null)) : null;
+        if (blockedMessage) { finish({ blocked: true, message: blockedMessage }); return; }
         const sources = allSources.slice(0,200);
         child = new BrowserWindow({icon,parent,modal:true,show:false,width:820,height:650,minWidth:480,minHeight:360,title:'Share a screen or window — BlastCast',autoHideMenuBar:true,
           webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,webSecurity:true,partition:`blastcast-picker-${nonce}`}});
@@ -65,7 +74,7 @@ function openPicker({ parent, stillTrusted, BrowserWindow, desktopCapturer, icon
 }
 // ClaudeBWAI — choose() runs the picker for chooseScreen; the display-media handler only serves what the pick armed
 // (serve(), boundary.cjs), so getDisplayMedia never opens a second picker and gets nothing without a pick.
-function installDisplayPicker({ session, getWindow, BrowserWindow, desktopCapturer, icon, timeoutMs = 120000, authorized = () => true, serve = () => null }) {
+function installDisplayPicker({ session, getWindow, BrowserWindow, desktopCapturer, icon, timeoutMs = 120000, authorized = () => true, serve = () => null, screenBlocked = null, platform = process.platform }) {
   let active = null;
   const studioWindow = parent => Boolean(authorized() && parent && !parent.isDestroyed() && getWindow() === parent && !parent.webContents.isDestroyed() &&
     parent.webContents.mainFrame?.url === STUDIO_URL);
@@ -87,7 +96,7 @@ function installDisplayPicker({ session, getWindow, BrowserWindow, desktopCaptur
       const parent = getWindow();
       if (active || !studioWindow(parent)) return null;
       let cancel = () => {};
-      const pending = openPicker({ parent, stillTrusted: () => studioWindow(parent), BrowserWindow, desktopCapturer, icon, timeoutMs, bindCancel: c => { cancel = c; } });
+      const pending = openPicker({ parent, stillTrusted: () => studioWindow(parent), BrowserWindow, desktopCapturer, icon, timeoutMs, screenBlocked, platform, bindCancel: c => { cancel = c; } });
       active = { cancel };
       try { return await pending; } finally { active = null; }
     },

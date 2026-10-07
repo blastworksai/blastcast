@@ -28,6 +28,7 @@ async function decideMediaAccess({ platform, mediaAllowed, getStatus, ask, showD
 function privacyUrl(kind) {
   if (kind === 'camera') return 'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera';
   if (kind === 'microphone') return 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
+  if (kind === 'screen') return 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
   return null;
 }
 // ClaudeBWAI — macOS Screen Recording permission. Without it getDisplayMedia yields a blank or empty capture, silently.

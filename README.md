@@ -19,7 +19,10 @@ browser, and the recording files stay under the host's control.
 - Bring in as many as **eight participants** through private guest links.
 - Keep a mixed episode recording alongside separate participant originals.
 - Switch between one-to-eight-camera scenes and dedicated screen-share layouts.
-- Let guests share their screen, blur their background, or use a local image.
+- Let guests share their screen, blur their background, or use a local image;
+  background effects run on-device with Google's MediaPipe selfie segmenter.
+- Chat live with every admitted guest in a back-channel that never appears in the
+  programme feed or the recordings.
 - Save recordings to a folder you choose on the host computer.
 - Recover guest originals after a temporary connection loss.
 - Activate offline with a signed key—no account sign-in is required by the app.
@@ -44,21 +47,21 @@ this repository or in the application package.
 
 ## Install
 
-BlastCast 0.2.3 is available for Windows, macOS and Linux.
+BlastCast 0.3.0 is available for Windows, macOS and Linux.
 
 ### macOS (Apple Silicon)
 
-Download [BlastCast-0.2.3-macos-arm64.pkg](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-macos-arm64.pkg)
+Download [BlastCast-0.3.0-macos-arm64.pkg](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.3.0-macos-arm64.pkg)
 and open it. The package is signed with a Developer ID and notarized by Apple,
 so it installs without a Gatekeeper warning. On first use, macOS asks for
 camera and microphone access.
 
 ### Windows (x64)
 
-Download [BlastCast-0.2.3-windows-x64.exe](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-windows-x64.exe)
+Download [BlastCast-0.3.0-windows-x64.exe](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.3.0-windows-x64.exe)
 and run it. The Windows installer is not publisher-signed yet, so Windows may
-show an unknown-publisher warning. To upgrade, uninstall the previous version
-first, with BlastCast closed; your activation, settings and recordings are kept.
+show an unknown-publisher warning. Setup upgrades an installed BlastCast in one
+run; your activation, settings and recordings are kept.
 
 ### Linux (Debian, Ubuntu and derivatives, amd64)
 
@@ -73,8 +76,8 @@ sudo apt update && sudo apt install blastcast
 The feed is signed with the Blastworks.ai key, fingerprint
 `0228 CC4C A5A0 866D 6EB6  EFDF D503 A8AE 60F9 BD33`; `apt` refuses the
 package if the signature does not match. You can also download
-[BlastCast-0.2.3-linux-amd64.deb](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.2.3-linux-amd64.deb)
-directly and install it with `sudo apt install ./BlastCast-0.2.3-linux-amd64.deb`.
+[BlastCast-0.3.0-linux-amd64.deb](https://github.com/blastworksai/blastcast/releases/latest/download/BlastCast-0.3.0-linux-amd64.deb)
+directly and install it with `sudo apt install ./BlastCast-0.3.0-linux-amd64.deb`.
 
 ### Verify a download
 

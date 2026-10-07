@@ -1,6 +1,6 @@
 // CodexBWAI — authenticated transport is supplied by the guest page.
 import type { CallConfiguration } from './bridge.js';
-import { GUEST_CALL_VIDEO_CAP, MOBILE_GUEST_CALL_VIDEO_CAP, PeerCall, type SignalMessage } from './peer-call.js';
+import { GUEST_CALL_VIDEO_CAP, MOBILE_GUEST_CALL_VIDEO_CAP, PeerCall, desktopGuestCodecOptions, type SignalMessage } from './peer-call.js';
 type Reply = { ok: boolean; callId: string | null; messages: { sequence: number; message: SignalMessage }[]; latest: number };
 const GIVE_UP_MS = 60_000;
 export class GuestCall {
@@ -57,7 +57,8 @@ export class GuestCall {
         if (!current() || !this.enabled || !this.stream) return;
         if (!config.ok) throw new Error('Call configuration unavailable');
         this.peer = new PeerCall({ role: 'guest', stream: this.stream, screenShare: true,
-          ...(this.mobile ? { preferH264: true, videoCap: MOBILE_GUEST_CALL_VIDEO_CAP } : {}),
+          // ClaudeBWAI — einh 4 Oct (CP4b): desktop guests answer H.264 first (VP8 fallback); Firefox keeps its native order (unmeasured).
+          ...(this.mobile ? { preferH264: true, videoCap: MOBILE_GUEST_CALL_VIDEO_CAP } : desktopGuestCodecOptions(typeof navigator === 'undefined' ? '' : navigator.userAgent)),
           onRemoteScreen: stream => { if (current()) this.onScreen(stream); }, iceServers: config.iceServers, iceTransportPolicy: config.iceTransportPolicy,
           send: async message => {
             if (!current()) throw new Error('Call replaced');

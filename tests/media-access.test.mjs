@@ -48,9 +48,10 @@ test('non-darwin keeps the dialog-only behaviour and never reads status', async 
 test('status maps unexpected values to unknown', () => {
   assert.deepEqual(statusOf({ platform: 'darwin', getStatus: k => (k === 'camera' ? 'denied' : 'banana') }), { camera: 'denied', microphone: 'unknown' });
 });
-test('privacy deep links are exactly camera or microphone', () => {
+test('privacy deep links are exactly camera, microphone or screen', () => {
   assert.match(privacyUrl('camera'), /Privacy_Camera$/);
   assert.match(privacyUrl('microphone'), /Privacy_Microphone$/);
-  assert.equal(privacyUrl('screen'), null);
+  assert.match(privacyUrl('screen'), /Privacy_ScreenCapture$/);  // 3.6a: was null; the screen-blocked message now has a settings button
+  assert.equal(privacyUrl('location'), null);
   assert.equal(privacyUrl({ toString: () => 'camera' }), null);
 });

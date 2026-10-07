@@ -16,6 +16,7 @@ const assets = new Map([
   ['/screen-share.js', ['screen-share.js', 'text/javascript']],
   ['/device-access.js', ['device-access.js', 'text/javascript']],
   ['/peer-call.js', ['peer-call.js', 'text/javascript']],
+  ['/chat-ui.js', ['chat-ui.js', 'text/javascript']], // ClaudeBWAI — einh 4-5 Oct: live chat
   ['/guest.css', ['guest.css', 'text/css']],
   ['/Blastworks-Cast-256.png', ['Blastworks-Cast-256.png', 'image/png']],
   ['/source-bitrate.js', ['source-bitrate.js', 'text/javascript']],
@@ -25,11 +26,14 @@ const assets = new Map([
   ['/source-limits.js', ['source-limits.js', 'text/javascript']],
   ['/source-session.js', ['source-session.js', 'text/javascript']],
   ['/source-recovery.js', ['source-recovery.js', 'text/javascript']],
-  ['/bodypix/tf.min.js', ['bodypix/tf.min.js', 'text/javascript']],
-  ['/bodypix/body-pix.min.js', ['bodypix/body-pix.min.js', 'text/javascript']],
-  ['/bodypix/model-stride16.json', ['bodypix/model-stride16.json', 'application/json']],
-  ['/bodypix/group1-shard1of1.bin', ['bodypix/group1-shard1of1.bin', 'application/octet-stream']],
-  ['/bodypix/NOTICE.txt', ['bodypix/NOTICE.txt', 'text/plain; charset=utf-8']],
+  // ClaudeBWAI — MediaPipe Tasks Vision (7 Oct): same tree under dist/mediapipe as the host protocol serves.
+  ['/mediapipe/vision_bundle.mjs', ['mediapipe/vision_bundle.mjs', 'text/javascript']],
+  ['/mediapipe/wasm/vision_wasm_internal.js', ['mediapipe/wasm/vision_wasm_internal.js', 'text/javascript']],
+  ['/mediapipe/wasm/vision_wasm_nosimd_internal.js', ['mediapipe/wasm/vision_wasm_nosimd_internal.js', 'text/javascript']],
+  ['/mediapipe/wasm/vision_wasm_internal.wasm', ['mediapipe/wasm/vision_wasm_internal.wasm', 'application/wasm']],
+  ['/mediapipe/wasm/vision_wasm_nosimd_internal.wasm', ['mediapipe/wasm/vision_wasm_nosimd_internal.wasm', 'application/wasm']],
+  ['/mediapipe/selfie_segmenter.tflite', ['mediapipe/selfie_segmenter.tflite', 'application/octet-stream']],
+  ['/mediapipe/NOTICE.txt', ['mediapipe/NOTICE.txt', 'text/plain; charset=utf-8']],
 ]);
 const readinessAssets = new Map([
   ['/readiness', ['readiness.html', 'text/html; charset=utf-8']],
@@ -45,11 +49,10 @@ async function serveReadinessAsset(directory, url, response) {
   catch { send(response, 503, { message: 'Readiness page unavailable. Ask the host to rebuild BlastCast.' }, 'application/json', readinessHeaders); }
 }
 
-/** The asset path a GET url maps to ('' when it has a query other than the tfjs model one). */
+/** The asset path a GET url maps to ('' when it has any query string). */
 function guestAssetPath(url) {
   const assetUrl = new URL(url, 'http://guest.invalid');
-  const modelQuery = assetUrl.pathname === '/bodypix/model-stride16.json' && assetUrl.search === '?tfjs-format=file';
-  return assetUrl.search === '' || modelQuery ? assetUrl.pathname : '';
+  return assetUrl.search === '' ? assetUrl.pathname : '';
 }
 
 const hasAsset = assetPath => assets.has(assetPath);

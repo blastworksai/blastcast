@@ -1,5 +1,6 @@
 // BCAST-14 scene-controls adapter — Antigravity_CLI
 import type { SceneId, SceneDefinition, AssetResolver, DrawableSource, CompositorOptions } from './scenes.js';
+import type { FrameCompositor } from './scenes.js';
 import { DEFAULT_SCENES, sceneById, SceneCompositor, resolvedSceneSlots } from './scenes.js';
 
 export interface SceneControlsOptions {
@@ -14,7 +15,8 @@ export interface SceneControlsHandle {
   readonly currentScene: SceneDefinition;
   selectScene(id: SceneId): void;
   updateSources(sources: readonly DrawableSource[]): void;
-  composeToCanvas(ctx: CanvasRenderingContext2D): Promise<number>;
+  /** ClaudeBWAI — einh 4 Oct (CP4c): accepts a 2D context (as before) or any FrameCompositor (Canvas 2D or WebGL2). */
+  composeToCanvas(target: CanvasRenderingContext2D | FrameCompositor): Promise<number>;
   destroy(): void;
 }
 
@@ -99,7 +101,11 @@ export function mountSceneControls(options: SceneControlsOptions): SceneControls
     if (gen === selectionGeneration) onSceneSelected(scene);
   }
 
-  async function composeToCanvas(ctx: CanvasRenderingContext2D): Promise<number> {
+  async function composeToCanvas(target: CanvasRenderingContext2D | FrameCompositor): Promise<number> {
+    if (typeof (target as FrameCompositor).draw === 'function' && 'backend' in target) {
+      return compositor.composeWith(target as FrameCompositor, { scene: currentScene, resolveAsset, sources: currentSources, customBackdrop: options.customBackdrop?.(currentScene.id) });
+    }
+    const ctx = target as CanvasRenderingContext2D;
     return compositor.composeFrame(ctx, { scene: currentScene, resolveAsset, sources: currentSources, customBackdrop: options.customBackdrop?.(currentScene.id) });
   }
 

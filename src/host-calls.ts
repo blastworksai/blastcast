@@ -220,7 +220,9 @@ export class HostCalls {
       if (!config.ok) throw new Error('Call configuration unavailable');
       // ClaudeBWAI — einh 3 Oct (item 8): the offer's codec order decides what the guest SENDS, so a phone guest is offered
       // H.264 first (hardware-encoded on phones; VP8 is software there and stuttered). Desktop guests keep the default order.
-      call.peer = new PeerCall({ role: 'host', stream, screenShare:true, videoCap: HOST_CALL_VIDEO_CAP, preferH264: entry.session.device === 'phone',
+      // ClaudeBWAI — einh 4 Oct (CP4b): desktop guests are offered H.264 first too (hardware on Windows/macOS, measured); a Firefox guest
+      // answers in its native order (see peer-call.ts isFirefoxUserAgent). The cap stays 640x360: the hardware encoders accept it.
+      call.peer = new PeerCall({ role: 'host', stream, screenShare:true, videoCap: HOST_CALL_VIDEO_CAP, preferH264: true,
         onRemoteScreen: screen => { if (!current()) return; screenVideo.srcObject=screen; if(screen) void screenVideo.play().catch(()=>{label.textContent='Guest screen could not play. Ask them to share again.';}); else screenVideo.pause(); }, iceServers: config.iceServers, iceTransportPolicy: config.iceTransportPolicy,
         send: async signal => {
           if (!current()) throw new Error('Call replaced.');

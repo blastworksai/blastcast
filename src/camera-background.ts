@@ -1,34 +1,41 @@
-// CodexBWAI — offline guest camera background processing with Apache-2.0 BodyPix.
+// ClaudeBWAI — offline guest/host camera background processing, now on Apache-2.0 MediaPipe Tasks Vision (ImageSegmenter + selfie segmenter), served from /mediapipe/ on this device; it began as CodexBWAI's BodyPix version.
 export type CameraBackgroundMode = 'off' | 'blur' | 'image';
 
-type Segmentation = { data: Uint8Array; width: number; height: number };
-type BodyPixModel = { segmentPerson(input: HTMLVideoElement | HTMLCanvasElement, options: object): Promise<Segmentation> };
-type BodyPixApi = {
-  load(options: object): Promise<BodyPixModel>;
-  toMask(segmentation: Segmentation, foreground: object, background: object): ImageData;
+type Segmentation = ImageData;
+type MediaPipeMask = { width: number; height: number; getAsFloat32Array(): Float32Array; close(): void };
+type MediaPipeResult = { confidenceMasks?: MediaPipeMask[]; close?(): void };
+type Segmenter = {
+  segmentForVideo(frame: HTMLCanvasElement, timestamp: number, callback: (result: MediaPipeResult) => void): void;
 };
-type TensorFlowApi = { setBackend(name: string): Promise<boolean>; ready(): Promise<void> };
+type MediaPipeModule = {
+  FilesetResolver: { forVisionTasks(basePath: string): Promise<object> };
+  ImageSegmenter: { createFromOptions(fileset: object, options: object): Promise<Segmenter> };
+};
 
-declare global {
-  interface Window { bodyPix?: BodyPixApi; tf?: TensorFlowApi }
-}
-
-let modelPromise: Promise<BodyPixModel> | null = null;
-async function loadModel(): Promise<BodyPixModel> {
+const bundleUrl = '/mediapipe/vision_bundle.mjs', wasmPath = '/mediapipe/wasm', modelUrl = '/mediapipe/selfie_segmenter.tflite';
+let modelPromise: Promise<Segmenter> | null = null;
+async function loadModel(): Promise<Segmenter> {
   if (!modelPromise) modelPromise = (async () => {
-    const tf = window.tf, bodyPix = window.bodyPix;
-    if (!tf || !bodyPix) throw new Error('Offline background processor is missing');
-    const probe = document.createElement('canvas');
-    const webgl = probe.getContext('webgl2') || probe.getContext('webgl');
-    if (webgl) {
-      try { if (!await tf.setBackend('webgl')) await tf.setBackend('cpu'); }
-      catch { await tf.setBackend('cpu'); }
-    } else await tf.setBackend('cpu');
-    await tf.ready();
-    return bodyPix.load({ architecture: 'MobileNetV1', outputStride: 16, multiplier: 0.5,
-      quantBytes: 2, modelUrl: '/bodypix/model-stride16.json' });
+    let mediapipe: MediaPipeModule;
+    try { mediapipe = await import(/* @vite-ignore */ bundleUrl) as MediaPipeModule; }
+    catch { throw new Error('Offline background processor is missing'); }
+    const fileset = await mediapipe.FilesetResolver.forVisionTasks(wasmPath);
+    const create = (delegate: 'GPU' | 'CPU') => mediapipe.ImageSegmenter.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: modelUrl, delegate }, runningMode: 'VIDEO', outputCategoryMask: false, outputConfidenceMasks: true });
+    try { return await create('GPU'); } catch { return create('CPU'); }
   })().catch(error => { modelPromise = null; throw error; });
   return modelPromise;
+}
+
+let lastTimestamp = 0;
+/** Person confidence (0..1) to an alpha mask at the mask's own size; a soft threshold keeps edges smooth. */
+function maskToImageData(mask: MediaPipeMask): ImageData {
+  const confidence = mask.getAsFloat32Array(), out = new ImageData(mask.width, mask.height), data = out.data;
+  for (let i = 0; i < confidence.length; i++) {
+    const t = Math.min(1, Math.max(0, ((confidence[i] ?? 0) - 0.35) / 0.3));
+    data[i * 4 + 3] = Math.round(t * t * (3 - 2 * t) * 255);
+  }
+  return out;
 }
 
 export function coverRect(sourceWidth: number, sourceHeight: number, width: number, height: number): [number, number, number, number] {
@@ -167,12 +174,16 @@ export class CameraBackground {
     }
   }
 
-  private async segment(generation: number, model: BodyPixModel): Promise<void> {
+  private async segment(generation: number, model: Segmenter): Promise<void> {
     while (generation === this.generation && this.raw && this.mode !== 'off') {
       try {
         this.inference.getContext('2d')?.drawImage(this.input, 0, 0, this.inference.width, this.inference.height);
-        this.segmentation = await model.segmentPerson(this.inference, { flipHorizontal: false,
-          internalResolution: 'medium', segmentationThreshold: 0.7 });
+        const timestamp = lastTimestamp = Math.max(performance.now(), lastTimestamp + 1);
+        // The callback form closes the result and its masks for us as soon as it returns; copy out what we need inside it.
+        model.segmentForVideo(this.inference, timestamp, result => {
+          const mask = result.confidenceMasks?.[0];
+          if (mask) this.segmentation = maskToImageData(mask);
+        });
         if (generation === this.generation) this.message(this.mode === 'blur'
           ? 'Background blur is on. Processing stays on this device.'
           : 'Background image is on. The image and processing stay on this device.');
@@ -187,9 +198,8 @@ export class CameraBackground {
   private paint(generation: number, context: CanvasRenderingContext2D): void {
     const draw = () => {
       if (generation !== this.generation || !this.raw || this.mode === 'off') return;
-      const segmentation = this.segmentation, bodyPix = window.bodyPix;
-      if (segmentation && bodyPix) {
-        const person = bodyPix.toMask(segmentation, { r: 0, g: 0, b: 0, a: 255 }, { r: 0, g: 0, b: 0, a: 0 });
+      const person = this.segmentation;
+      if (person) {
         if (person.width > 0 && person.height > 0) {
           context.globalCompositeOperation = 'source-over';
           context.filter = 'none';

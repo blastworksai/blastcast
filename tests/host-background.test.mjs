@@ -14,10 +14,11 @@ test('background select has off, blur and image', () => {
 test('privacy settings button exists and is hidden by default', () => {
   assert.match(html, /<button id="open-privacy-settings" class="secondary"[^>]*hidden[^>]*>Open System Settings<\/button>/);
 });
-test('both bodypix scripts load before studio.js and nothing comes from a CDN', () => {
-  const tf = html.indexOf('bodypix/tf.min.js'), body = html.indexOf('bodypix/body-pix.min.js'), mod = html.indexOf('src="studio.js"');
-  assert.ok(tf > -1 && body > tf && mod > body);
+test('no tf or bodypix script tags remain and nothing comes from a CDN', () => {
+  assert.doesNotMatch(html, /bodypix|tf\.min|body-pix/i);
+  assert.ok(html.indexOf('src="studio.js"') > -1);
   assert.doesNotMatch(html, /<script[^>]+src="https?:\/\//);
+  assert.doesNotMatch(html, /storage\.googleapis|cdn\.jsdelivr|unpkg/);
 });
 test('toggle names are static and the studio persists the background', () => {
   assert.match(html, /aria-label="Mute microphone" aria-pressed="true"/);

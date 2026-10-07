@@ -55,6 +55,21 @@ export async function replaceTrackCapped(sender: CappableSender & Pick<RTCRtpSen
 
 /** ClaudeBWAI — einh 3 Oct (item 8): codec list with H.264 first (packetization-mode=1 before 0), everything else after in
  * its original order (rtx/red/ulpfec stay). Phones encode H.264 in hardware; VP8 is software there and stutters. */
+/** ClaudeBWAI — einh 4 Oct (CP4b): codec rule for the camera transceiver, in both directions.
+ * Measured (spike/RESULTS.md, Odin + Thor, Electron 44.4.5, no Chromium switches): Windows (MediaFoundation) and macOS (VideoToolbox)
+ * hardware-encode and -decode H.264 at 360p/720p/1080p, and 7 inbound 1080p streams cost far less CPU as H.264 than as VP8;
+ * Chrome/Edge 154 guests encode H.264 in hardware. So every desktop guest and the host are offered/answer H.264 first
+ * (packetization-mode=1), VP8 kept in the list as fallback. Safari uses VideoToolbox like the phone path: H.264 first.
+ * Firefox is unmeasured (its H.264 is typically software OpenH264 [Guessing]) so a Firefox guest keeps its native order: it
+ * re-asserts that order on its ANSWER, which is what decides what it sends. The host cannot see the guest's browser, so the guest decides. */
+export function isFirefoxUserAgent(userAgent: string): boolean {
+  return /\b(Firefox|FxiOS)\//i.test(userAgent) && !/\bSeamonkey\//i.test(userAgent);
+}
+
+export function desktopGuestCodecOptions(userAgent: string): { preferH264?: true; nativeCodecOrder?: true } {
+  return isFirefoxUserAgent(userAgent) ? { nativeCodecOrder: true } : { preferH264: true };
+}
+
 export function preferH264<T extends { mimeType: string; sdpFmtpLine?: string }>(codecs: readonly T[]): T[] {
   const h264 = codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264');
   if (!h264.length) return [...codecs];
@@ -124,6 +139,7 @@ export class PeerCall {
   private pc: RTCPeerConnection | null = null;
   private videoCap: VideoCap | null;
   private preferH264 = false;
+  private nativeCodecOrder = false;
   private cameraSenders: RTCRtpSender[] = [];
   private state: CallState = 'new';
   private earlyCandidates: RTCIceCandidateInit[] = [];
@@ -167,10 +183,13 @@ export class PeerCall {
     iceTransportPolicy?: RTCIceTransportPolicy;
     /** Caps what this side's camera/program video sender encodes. Recordings are unaffected. */
     videoCap?: VideoCap;
-    /** ClaudeBWAI — ask for H.264 on the camera video (phone guests). Silently ignored where unsupported. */
+    /** ClaudeBWAI — ask for H.264 on the camera video (the host passes it for every guest since CP4b; desktop guests set it too). Silently ignored where unsupported. */
     preferH264?: boolean;
+    /** ClaudeBWAI — einh 4 Oct (CP4b): keep this browser's own codec order on the camera video (Firefox guests; unmeasured). Wins over preferH264. */
+    nativeCodecOrder?: boolean;
   }) {
     this.preferH264 = options.preferH264 === true;
+    this.nativeCodecOrder = options.nativeCodecOrder === true;
     // The guest page builds its PeerCall in guest-call.ts, so the guest cap is the role default.
     this.videoCap = options.videoCap ?? (options.role === 'guest' ? GUEST_CALL_VIDEO_CAP : null);
     this.role = options.role;
@@ -310,11 +329,11 @@ export class PeerCall {
   /** ClaudeBWAI — H.264 first on the camera video transceiver (never the screen one). Applied before each local description;
    * a browser without setCodecPreferences or H.264 keeps its default order. */
   private applyCodecPreferences(pc: RTCPeerConnection): void {
-    if (!this.preferH264) return;
+    if (!this.preferH264 && !this.nativeCodecOrder) return;
     try {
       const capabilities: RTCRtpCodec[] | undefined = (globalThis as any).RTCRtpReceiver?.getCapabilities?.('video')?.codecs;
       if (!capabilities?.length) return;
-      const ordered = preferH264(capabilities);
+      const ordered = this.nativeCodecOrder ? [...capabilities] : preferH264(capabilities);
       for (const transceiver of pc.getTransceivers()) {
         if (transceiver === this.screenTransceiver || !this.cameraSenders.includes(transceiver.sender)) continue;
         if (typeof transceiver.setCodecPreferences === 'function') transceiver.setCodecPreferences(ordered);

@@ -10,6 +10,7 @@ import { ScreenShare, showScreen } from './screen-share.js';
 import { GuestCall } from './guest-call.js';
 import { timeoutSignal, WakeLockManager, isMobileDevice, isPhoneUserAgent } from './guest-platform.js';
 import { resolveInvite, forgetInvite } from './guest-invite.js';
+import { createChatUi } from './chat-ui.js';
 import { CameraBackground, type CameraBackgroundMode } from './camera-background.js';
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const video = el<HTMLVideoElement>('guest-preview');
@@ -109,6 +110,8 @@ function buttons(): void {
   syncPlatform(inCall);
   document.body.classList.toggle('in-call', inCall);
   el('guest-host-panel').hidden = !inCall;
+  if (el('guest-chat-panel').hidden === inCall) el('guest-chat-panel').hidden = !inCall;
+  if (inCall) chat.start(); else chat.stop();
   if ((!inCall || !attached) && (share?.stream || share?.busy)) share.stop();
   el<HTMLButtonElement>('guest-share-screen').disabled = !inCall || !attached || Boolean(share?.busy || share?.stream);
   el<HTMLButtonElement>('guest-stop-screen').disabled = !share?.stream && !share?.busy;
@@ -178,8 +181,24 @@ const call = new GuestCall(api, el<HTMLVideoElement>('guest-host'), el('guest-ca
   el('guest-screen-panel').hidden = !stream;
   showScreen(el<HTMLVideoElement>('guest-screen'), stream);
 }, phoneGuest);
-share = new ScreenShare(() => navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }), (stream, message) => {
+// ClaudeBWAI — einh 4-5 Oct: live chat. Polls only while admitted; the panel is hidden otherwise (and again on leave or removal).
+const chat = createChatUi({
+  root: el('guest-chat-root'), role: 'guest',
+  send: async text => {
+    try { return await api<{ ok: true; message: import('./chat-ui.js').ChatLine }>('chat/send', { text }); }
+    catch (error) { return { ok: false, reason: error instanceof Error && error.message === '429' ? 'rate-limited' : 'invalid' } as const; }
+  },
+  poll: async since => {
+    try { return await api<{ ok: true; messages: import('./chat-ui.js').ChatLine[]; latestId: number }>('chat/poll', { since }); }
+    catch { return { ok: false } as const; }
+  },
+  isSharing: () => Boolean(share?.stream),
+  onAttention: () => { /* the guest signal is the document title, set inside chat-ui */ },
+  openChat: () => { el('guest-chat-panel').scrollIntoView?.(); el('guest-chat-root').querySelector<HTMLInputElement>('input')?.focus(); }
+});
+share = new ScreenShare(() => navigator.mediaDevices.getDisplayMedia({ video: true, audio: false, selfBrowserSurface: 'exclude' } as DisplayMediaStreamOptions) /* ClaudeBWAI — einh 4-5 Oct: never offer this tab (it shows the chat) */, (stream, message) => {
   status('guest-screen-status', message);
+  chat.refresh();
   void call.setScreen(stream).catch(() => {
     if (stream) share?.stop();
     status('guest-screen-status', 'The screen could not be sent. Stop and retry sharing.', true);

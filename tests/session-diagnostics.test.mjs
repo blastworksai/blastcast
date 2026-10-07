@@ -15,18 +15,18 @@ const { createRecordingStore } = require('../desktop/recording.cjs');
 const ID = '12345678-1234-1234-1234-123456789abc';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const recorder = recorderInfo(RECORDING_MIME_TYPE);
-const scene = { framesDrawn: 150, drawnFps: 30, avgDrawMs: 4.2, maxDrawMs: 11.5 };
-const inbound = { codec: 'video/VP8', width: 1920, height: 1080, fps: 29.9, framesDropped: 2, framesDecoded: 148, jitter: 0.004, packetsLost: 0 };
-const outbound = { codec: 'video/VP8', width: 640, height: 360, fps: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'none' };
+const scene = { framesDrawn: 150, drawnFps: 30, avgDrawMs: 4.2, maxDrawMs: 11.5, backend: 'canvas2d' };
+const inbound = { codec: 'video/VP8', width: 1920, height: 1080, fps: 29.9, framesDropped: 2, framesDecoded: 148, jitter: 0.004, packetsLost: 0, decoderImplementation: 'D3D11VideoDecoder', powerEfficientDecoder: true };
+const outbound = { codec: 'video/VP8', width: 640, height: 360, fps: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'none', framesEncoded: 75, totalEncodeTime: 0.4, qpSum: 900 };
 const start = () => ({ kind: 'start', quality: 1080, participants: 2, recorder });
 const sample = (guests = [{ slot: 1, inbound: [inbound], outbound: [outbound] }]) => ({ kind: 'sample', windowMs: 5000, participants: 2, scene, recorder, guests });
 // A getStats report as Chromium hands it over, with the identifying entries a careless summary would leak.
-function report({ dropped = 10, decoded = 300, lost = 1 } = {}) {
+function report({ dropped = 10, decoded = 300, lost = 1, encoded = 100, encodeTime = 1, qp = 1000 } = {}) {
   return [
     { id: 'CIT01_96', type: 'codec', mimeType: 'video/VP8' },
-    { id: 'IT01V', type: 'inbound-rtp', kind: 'video', codecId: 'CIT01_96', frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30, framesDropped: dropped, framesDecoded: decoded, jitter: 0.005, packetsLost: lost, bytesReceived: 9e6, trackIdentifier: 'Ada Lovelace camera' },
+    { id: 'IT01V', type: 'inbound-rtp', kind: 'video', codecId: 'CIT01_96', frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30, framesDropped: dropped, framesDecoded: decoded, jitter: 0.005, packetsLost: lost, decoderImplementation: 'ExternalDecoder (D3D11VideoDecoder)', powerEfficientDecoder: true, bytesReceived: 9e6, trackIdentifier: 'Ada Lovelace camera' },
     { id: 'IT01A', type: 'inbound-rtp', kind: 'audio', codecId: 'CIT01_111', bytesReceived: 1e5 },
-    { id: 'OT01V', type: 'outbound-rtp', kind: 'video', codecId: 'CIT01_96', frameWidth: 640, frameHeight: 360, framesPerSecond: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'bandwidth', bytesSent: 4e6, rid: 'token-abc' },
+    { id: 'OT01V', type: 'outbound-rtp', kind: 'video', codecId: 'CIT01_96', frameWidth: 640, frameHeight: 360, framesPerSecond: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'bandwidth', framesEncoded: encoded, totalEncodeTime: encodeTime, qpSum: qp, bytesSent: 4e6, rid: 'token-abc' },
     { id: 'IT02V', type: 'inbound-rtp', kind: 'video', bytesReceived: 0, jitter: 0 },
     { id: 'OT02V', type: 'outbound-rtp', kind: 'video', codecId: 'CIT01_96', bytesSent: 0, qualityLimitationReason: 'none' },
     { id: 'Lc1', type: 'local-candidate', address: '192.168.1.20', ip: '192.168.1.20', port: 50000, candidateType: 'host', usernameFragment: 'ufrag-secret' },
@@ -42,16 +42,16 @@ test('a renderer sample carries slots, video stats and deltas only: no names, ad
     () => ({ participants: 2, guests: [{ slot: 3, source: peer, entries }] }), recorder, 10);
   log.start(ID, 2160);
   for (const ms of [3, 5, 13]) meter.add(ms);
-  entries = report({ dropped: 14, decoded: 450, lost: 3 });
+  entries = report({ dropped: 14, decoded: 450, lost: 3, encoded: 175, encodeTime: 1.5, qp: 2200 });
   await sleep(35); log.pause(); await log.stop('complete');
   const kinds = sent.map(([, payload]) => payload.kind);
   assert.equal(kinds[0], 'start'); assert.ok(kinds.includes('sample')); assert.equal(kinds.at(-1), 'end');
   for (const [id, payload] of sent) { assert.equal(id, ID); assert.equal(validDiagnostics(payload), true, JSON.stringify(payload)); }
   const first = sent.find(([, payload]) => payload.kind === 'sample')[1];
   assert.deepEqual(first.guests, [{ slot: 3,
-    inbound: [{ codec: 'video/VP8', width: 1920, height: 1080, fps: 30, framesDropped: 4, framesDecoded: 150, jitter: 0.005, packetsLost: 2 }],
-    outbound: [{ codec: 'video/VP8', width: 640, height: 360, fps: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'bandwidth' }] }]);
-  assert.deepEqual(first.scene, { framesDrawn: 3, drawnFps: first.scene.drawnFps, avgDrawMs: 7, maxDrawMs: 13 });
+    inbound: [{ codec: 'video/VP8', width: 1920, height: 1080, fps: 30, framesDropped: 4, framesDecoded: 150, jitter: 0.005, packetsLost: 2, decoderImplementation: 'D3D11VideoDecoder', powerEfficientDecoder: true }],
+    outbound: [{ codec: 'video/VP8', width: 640, height: 360, fps: 15, encoderImplementation: 'libvpx', powerEfficientEncoder: false, qualityLimitationReason: 'bandwidth', framesEncoded: 75, totalEncodeTime: 0.5, qpSum: 1200 }] }]);
+  assert.deepEqual(first.scene, { framesDrawn: 3, drawnFps: first.scene.drawnFps, avgDrawMs: 7, maxDrawMs: 13, backend: 'canvas2d' });
   assert.deepEqual(first.recorder, { codec: 'vp8', mimeType: 'video/webm;codecs=vp8,opus' });
   assert.deepEqual(sent[0][1], { kind: 'start', quality: 2160, participants: 2, recorder });
   const text = JSON.stringify(sent);
@@ -205,5 +205,5 @@ test('the renderer log turns itself off after a refusal or a rejected bridge cal
   log.start(ID, 1080); await sleep(40); await log.stop('error');
   assert.equal(calls, 1);
   assert.deepEqual(processMetrics(null), { cpu: 0, memoryKiB: 0, byType: {} });
-  const meter = new DrawMeter(); assert.deepEqual(meter.take(5000), { framesDrawn: 0, drawnFps: 0, avgDrawMs: null, maxDrawMs: null });
+  const meter = new DrawMeter(); assert.deepEqual(meter.take(5000), { framesDrawn: 0, drawnFps: 0, avgDrawMs: null, maxDrawMs: null, backend: 'canvas2d' });
 });

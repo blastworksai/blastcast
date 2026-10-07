@@ -12,7 +12,7 @@ async function clearState(ctx) {
   const myController = st.controller;
   st.controller = null;
   myController?.abort();
-  st.verified = false; st.route = null; st.phase = 'off'; st.readiness = null; ctx.limiter.clear();
+  st.verified = false; st.route = null; st.phase = 'off'; st.readiness = null; ctx.limiter.clear(); ctx.chat.clear();
   st.readinessToken = ''; st.readinessDigest = null; st.readinessDeadline = 0;
   st.nonce = ''; st.proof = ''; st.latest = null; ctx.opened.clear(); ctx.store.revokeAll(); ctx.signaling.pruneAll(); ctx.presence.clear(); ctx.sourceInFlight.clear(); ctx.originalsUnsupported.clear();
   const active = st.server; st.server = null;

@@ -12,6 +12,21 @@ const ARCHIVE_HASHES = {
   'darwin-x64': '778350cc572c36484dd56c130cae96ad1a9a5b695ba22dd06abd23ba0a46c9de'
 };
 
+// ClaudeBWAI — einh 5 Oct: Mac App Store build. The MAS Electron zip has its own pin so the two tables never cross-accept.
+export const MAS_ARCHIVE_HASHES = {
+  'mas-arm64': '5386333d2db3c23b1d0555b01e4dbbb49b29bf46f935f0d68372b00b6ac16469'
+};
+// Files that must not exist anywhere in the MAS bundle (the licence key machinery and the GitHub releases link).
+export const MAS_EXCLUDED = [
+  'assets/licensing/public-key.txt', 'desktop/license-key.cjs', 'desktop/license-store.cjs', 'desktop/releases-link.cjs'
+];
+// ClaudeBWAI — Task 5.1: the compiled app-icon catalog, built on Thor by build-icon-assets.sh (actool), committed, and pinned here.
+// 'PENDING' means the catalog has not been built and pinned yet: packaging refuses rather than ship a half-done icon.
+export const ASSETS_CAR_SHA256 = '5641a1f8a55c50b413679a50b59db5ac23380bdd626bbfbcd8a3ff145bec7d77';
+const COMMITTED_ASSETS_CAR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'Assets.car');
+const MAS_TEAM_ID = 'RN28A922NH';
+const MAS_BUNDLE_ID = 'com.blastworks.blastcast';
+
 async function getHash(filePath) {
   const data = await fs.readFile(filePath);
   return crypto.createHash('sha256').update(data).digest('hex');
@@ -28,9 +43,28 @@ export async function copyRuntimeBundle(source, destination, { platform = proces
   await fs.cp(source, destination, { recursive: true, verbatimSymlinks: true });
 }
 
+// CFBundleVersion for a re-upload: 1 to 3 dot-separated integers, first part not zero (App Store Connect rule of thumb).
+export function validateBuildNumber(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,8}(\.\d{1,9}){0,2}$/.test(value)) {
+    throw new Error(`Invalid --build-number "${value}": use a positive integer or up to three dotted integers (for example 7 or 1.0.7)`);
+  }
+  return value;
+}
+
+// Reads the icon catalog and proves it is the pinned one. Only tests pass a different { path, sha256 }.
+export async function loadAssetsCar({ path: carPath = COMMITTED_ASSETS_CAR, sha256 = ASSETS_CAR_SHA256 } = {}) {
+  if (sha256 === 'PENDING') throw new Error('Assets.car not pinned yet; run build-icon-assets.sh on Thor');
+  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('Assets.car pin is not a SHA-256 hex digest');
+  let data;
+  try { data = await fs.readFile(carPath); } catch { throw new Error(`Missing Assets.car: ${carPath}`); }
+  const actual = crypto.createHash('sha256').update(data).digest('hex');
+  if (actual !== sha256) throw new Error(`Assets.car SHA-256 ${actual} does not match the pin ${sha256}`);
+  return { data, sha256: actual };
+}
+
 // CodexBWAI — bounded XML transformation; reject unsupported/duplicate values.
 // The pinned runtime is the only production plist source. No dynamic XML input.
-export function transformPlist(xml, version = null) {
+export function transformPlist(xml, version = null, { mas = false, buildNumber = null } = {}) {
   const rootEnd = /<\/dict>\s*<\/plist>\s*$/;
   if (!rootEnd.test(xml)) throw new Error('Unparseable Info.plist dict termination');
   function set(key, value, required = false) {
@@ -54,16 +88,82 @@ export function transformPlist(xml, version = null) {
     set('CFBundleVersion', version);
     set('CFBundleShortVersionString', version);
   }
+  if (buildNumber !== null) set('CFBundleVersion', validateBuildNumber(buildNumber));
   set('NSCameraUsageDescription', 'BlastCast needs camera access to record your podcast.');
   set('NSMicrophoneUsageDescription', 'BlastCast needs microphone access to record your podcast.');
   set('CFBundleIconFile', 'BlastCast.icns', true); // ClaudeBWAI — Electron's generic icon replaced by the brand .icns
+  set('CFBundleIconName', 'AppIcon'); // Task 5.1 — names the AppIcon set inside Assets.car
+  if (mas) {
+    set('LSApplicationCategoryType', 'public.app-category.video');
+    set('ElectronTeamID', MAS_TEAM_ID);
+    // einh 5 Oct: "Standard only, exempt" — a boolean, not a string.
+    const key = 'ITSAppUsesNonExemptEncryption';
+    const keyPattern = `<key>\\s*${key}\\s*</key>`;
+    const count = (xml.match(new RegExp(keyPattern, 'g')) || []).length;
+    if (count > 1) throw new Error(`Plist replacement failed: ${key} occurred ${count} times`);
+    if (count === 0) xml = xml.replace(rootEnd, `<key>${key}</key>\n<false/>\n</dict>\n</plist>`);
+    else {
+      const entry = new RegExp(`${keyPattern}\\s*<(?:true|false)\\s*/>`);
+      if (!entry.test(xml)) throw new Error(`Plist replacement failed: ${key} must be a boolean`);
+      xml = xml.replace(entry, `<key>${key}</key>\n<false/>`);
+    }
+  }
   return xml;
+}
+
+// Sets a bundle's CFBundleIdentifier in an existing XML Info.plist; exactly one key must exist.
+export function retagBundleId(xml, id) {
+  const entry = /(<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>)[^<]*(<\/string>)/g;
+  if ((xml.match(entry) || []).length !== 1) throw new Error('Helper Info.plist needs exactly one CFBundleIdentifier');
+  return xml.replace(entry, `$1${id}$2`);
+}
+
+// com.blastworks.blastcast.helper[.suffix]: "Electron Helper (Renderer).app" -> .helper.renderer
+export function masHelperBundleId(appName) {
+  const m = /^.*Helper(?: \(([A-Za-z0-9 ]+)\))?\.app$/.exec(appName);
+  if (!m) throw new Error(`Unrecognised helper app name: ${appName}`);
+  const suffix = m[1] ? `.${m[1].toLowerCase().replace(/ +/g, '')}` : '';
+  return `${MAS_BUNDLE_ID}.helper${suffix}`;
+}
+
+// The helper's SHA-256 must equal the `out/ssh sha256:` line of its build record (BUILDINFO.txt).
+export async function verifyHelper(helperPath, buildinfoPath, { platform = process.platform, lipoArchs = defaultLipoArchs } = {}) {
+  const info = buildinfoPath ?? path.join(path.dirname(helperPath), 'BUILDINFO.txt');
+  let text;
+  try { text = await fs.readFile(info, 'utf8'); } catch { throw new Error(`Missing helper BUILDINFO: ${info}`); }
+  const m = /^out\/ssh sha256:\s*([0-9a-f]{64})\s*$/m.exec(text);
+  if (!m) throw new Error(`BUILDINFO has no "out/ssh sha256:" line: ${info}`);
+  let actual;
+  try { actual = await getHash(helperPath); } catch { throw new Error(`Missing or unreadable helper: ${helperPath}`); }
+  if (actual !== m[1]) throw new Error(`Helper SHA-256 ${actual} does not match BUILDINFO ${m[1]}`);
+  if (platform === 'darwin') {
+    const archs = lipoArchs(helperPath);
+    if (archs !== 'arm64') throw new Error(`Helper must be arm64 only; lipo reports "${archs}"`);
+  }
+  return actual;
+}
+
+function defaultLipoArchs(file) {
+  const r = spawnSync('/usr/bin/lipo', ['-archs', file], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) throw new Error(`lipo failed: ${r.error?.message || r.stderr || r.status}`);
+  return r.stdout.trim();
 }
 
 export const ICON_SIZES = [16, 32, 64, 128, 256, 512, 1024];
 export const ICON_FILES = ICON_SIZES.map(s => `assets/brand/icons/blastcast-${s}.png`);
 
-export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch, archiveVerification = null }) {
+export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch, archiveVerification = null, mas = false, helperPath = null, helperBuildinfo = null, platform = process.platform, lipoArchs = defaultLipoArchs, buildNumber = null, assetsCar = {} }) {
+  // ClaudeBWAI — einh 5 Oct: Mac App Store build (arm64 only, bundled ssh helper, no licence-key machinery).
+  if (mas) {
+    if (targetArch !== 'mas-arm64') throw new Error('--mas packages the arm64 Mac App Store runtime only');
+    if (!helperPath) throw new Error('--mas requires --helper <path to the arm64 ssh helper>');
+  } else if (helperPath || helperBuildinfo) {
+    throw new Error('--helper is only valid with --mas');
+  }
+  // Task 5.1 — both modes: refuse before anything is created if the icon catalog or build number is not right.
+  if (buildNumber !== null) validateBuildNumber(buildNumber);
+  const car = await loadAssetsCar(assetsCar);
+  const helperHash = mas ? await verifyHelper(path.resolve(helperPath), helperBuildinfo && path.resolve(helperBuildinfo), { platform, lipoArchs }) : null;
   const resolvedSource = await fs.realpath(sourceDir);
   sourceDir = resolvedSource;
   const absOutParent = await fs.realpath(path.dirname(outDir));
@@ -112,16 +212,16 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
   // Validate payload completeness
   const requiredFiles = [
     'LICENSE','assets/licensing/public-key.txt','assets/localhost-run-known-hosts.txt','desktop/license-key.cjs','desktop/license-store.cjs',
-    'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
+    'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/chat-ui.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
   'dist/recording-status.js',
     'package.json',
-    'desktop/admission.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
-    'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
+    'desktop/admission.cjs', 'desktop/chat-room.cjs', 'desktop/session-diagnostics.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
+    'desktop/destination.cjs', 'desktop/licences-window.cjs', 'desktop/mas-flavour.cjs', 'desktop/releases-link.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
     'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
     'dist/source-protocol.js', 'dist/source-bitrate.js', 'dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js',
     'dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js', 'dist/screen-share-attention.js', 'dist/program-output.js',
     'desktop/signaling.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/peer-call.js', 'dist/audio-mix.js',
-    ...['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt'].map(name => `dist/bodypix/${name}`),
+    ...['vision_bundle.mjs','selfie_segmenter.tflite','NOTICE.txt','wasm/vision_wasm_internal.js','wasm/vision_wasm_internal.wasm','wasm/vision_wasm_nosimd_internal.js','wasm/vision_wasm_nosimd_internal.wasm'].map(name => `dist/mediapipe/${name}`),
     ...['1cam', '2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8'].map(name => `dist/${name}.png`),
     'dist/index.html', 'dist/studio.js', 'dist/studio.css', 'dist/invites.js', 'dist/relay-input.js',
     ...['cloudflare-tunnel-ready', 'cloudflare-route-form', 'cloudflare-route-ready', 'expressturn-fields'].map(name => `dist/instructions/${name}.png`),
@@ -135,6 +235,10 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
     'assets/scenes/defaults/7cam.png', 'assets/scenes/defaults/8cam.png',
     'assets/scenes/defaults/screensharehorizont-8.png', 'assets/scenes/defaults/screensharevert-8.png'
   ];
+  if (mas) {
+    for (const f of MAS_EXCLUDED) requiredFiles.splice(requiredFiles.indexOf(f), 1);
+    requiredFiles.push('assets/licences/OpenSSH-LICENCE.txt', 'assets/licences/OpenSSL-LICENSE.txt');
+  }
   for (const req of requiredFiles) {
     try { 
       const st = await fs.lstat(path.join(sourceDir, req)); 
@@ -222,18 +326,59 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
 
   await fs.writeFile(path.join(appDir, 'package.json'), JSON.stringify(minPkg, null, 2));
   await fs.copyFile(path.join(sourceDir, 'LICENSE'), path.join(appDir, 'LICENSE'));
-  await fs.cp(path.join(sourceDir, 'desktop'), path.join(appDir, 'desktop'), { recursive: true, verbatimSymlinks: true });
-  await fs.cp(path.join(sourceDir, 'dist'), path.join(appDir, 'dist'), { recursive: true, verbatimSymlinks: true });
-  await fs.cp(path.join(sourceDir, 'assets'), path.join(appDir, 'assets'), { recursive: true, verbatimSymlinks: true });
+  const excluded = mas ? new Set(MAS_EXCLUDED.map(f => path.join(sourceDir, f))) : null;
+  const keep = excluded ? (src) => !excluded.has(src) : undefined;
+  await fs.cp(path.join(sourceDir, 'desktop'), path.join(appDir, 'desktop'), { recursive: true, verbatimSymlinks: true, filter: keep });
+  await fs.cp(path.join(sourceDir, 'dist'), path.join(appDir, 'dist'), { recursive: true, verbatimSymlinks: true, filter: keep });
+  // ClaudeBWAI — the app serves MediaPipe from dist/mediapipe; the vendored source copy (~22 MB) is not shipped twice.
+  const vendoredMediaPipe = path.join(sourceDir, 'assets', 'mediapipe');
+  const keepAsset = src => src !== vendoredMediaPipe && !src.startsWith(vendoredMediaPipe + path.sep) && (!keep || keep(src));
+  await fs.cp(path.join(sourceDir, 'assets'), path.join(appDir, 'assets'), { recursive: true, verbatimSymlinks: true, filter: keepAsset });
+  // ClaudeBWAI — 7 Oct, App Store Connect 90255: a payload file readable only by its owner (an npm tarball's 0640) is
+  // root-only once installed, so the code signature can't be checked. Every payload file and folder gets read for all.
+  async function readableForAll(dir) {
+    await fs.chmod(dir, (await fs.stat(dir)).mode & 0o7777 | 0o555);
+    for (const item of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, item.name);
+      if (item.isDirectory()) await readableForAll(full);
+      else if (item.isFile()) await fs.chmod(full, (await fs.stat(full)).mode & 0o7777 | 0o444);
+    }
+  }
+  await readableForAll(appDir);
 
   // CodexBWAI: accept supported upstream plist values and replace each key once.
   const plistPath = path.join(outApp, 'Contents', 'Info.plist');
-  await fs.writeFile(plistPath, transformPlist(await fs.readFile(plistPath, 'utf8'), pkg.version));
+  await fs.writeFile(plistPath, transformPlist(await fs.readFile(plistPath, 'utf8'), pkg.version, { mas, buildNumber }));
+
+  if (mas) {
+    // Foreign com.github.Electron.* ids inside the bundle are rejected by App Store Connect.
+    const frameworks = path.join(outApp, 'Contents', 'Frameworks');
+    for (const item of await fs.readdir(frameworks, { withFileTypes: true })) {
+      if (!item.isDirectory() || !/Helper.*\.app$/.test(item.name)) continue;
+      const hp = path.join(frameworks, item.name, 'Contents', 'Info.plist');
+      await fs.writeFile(hp, retagBundleId(await fs.readFile(hp, 'utf8'), masHelperBundleId(item.name)));
+    }
+    const loginItems = path.join(outApp, 'Contents', 'Library', 'LoginItems');
+    let logins = [];
+    try { logins = await fs.readdir(loginItems, { withFileTypes: true }); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    for (const item of logins) {
+      if (!item.isDirectory() || !item.name.endsWith('.app')) continue;
+      const lp = path.join(loginItems, item.name, 'Contents', 'Info.plist');
+      await fs.writeFile(lp, retagBundleId(await fs.readFile(lp, 'utf8'), `${MAS_BUNDLE_ID}.loginhelper`));
+    }
+    const helpersDir = path.join(outApp, 'Contents', 'Helpers');
+    await fs.mkdir(helpersDir, { recursive: true });
+    await fs.copyFile(path.resolve(helperPath), path.join(helpersDir, 'ssh'));
+    await fs.chmod(path.join(helpersDir, 'ssh'), 0o755);
+  }
 
   // ClaudeBWAI: brand icon, built from the validated PNGs; the plist above points CFBundleIconFile at it.
   const iconMap = {};
   for (const size of ICON_SIZES) iconMap[size] = await fs.readFile(path.join(sourceDir, `assets/brand/icons/blastcast-${size}.png`));
   await fs.writeFile(path.join(outApp, 'Contents', 'Resources', 'BlastCast.icns'), writeIcns(iconMap));
+
+  // Task 5.1: compiled icon catalog, verified against the pin above.
+  await fs.writeFile(path.join(outApp, 'Contents', 'Resources', 'Assets.car'), car.data);
 
   // Copy notices
   for (const file of noticeFiles) {
@@ -257,6 +402,9 @@ export async function assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch
       executableHashScope: "runtime executable before development re-signing"
     },
     notices: noticeHashes,
+    assetsCar: { sha256: car.sha256 },
+    ...(buildNumber !== null ? { buildNumber } : {}),
+    ...(mas ? { masHelper: { sha256: helperHash } } : {}),
     status: {
       signing: "no BlastCast signing/notarization performed; upstream bundle signature not verified and modified by bundling",
       gatekeeper: "no Gatekeeper success or bypass claimed"
@@ -336,7 +484,15 @@ export async function createMacInstaller({ appPath, outDir, stagingDir, version,
   return packagePath;
 }
 
-export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, buildDmg = false, buildPkg = false }) {
+// Each mode accepts only its own table: the MAS zip never passes without --mas, nor a darwin zip with it.
+export function matchArchive(actualHash, mas) {
+  for (const [name, expected] of Object.entries(mas ? MAS_ARCHIVE_HASHES : ARCHIVE_HASHES)) if (actualHash === expected) return name;
+  throw new Error(`Archive hash ${actualHash} does not match any official Electron ${PINNED_VERSION} ${mas ? 'Mac App Store' : 'macOS'} pin.`);
+}
+
+export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, buildDmg = false, buildPkg = false, mas = false, arch = null, helperPath = null, helperBuildinfo = null, buildNumber = null }) {
+  if (mas && arch !== null && arch !== 'arm64') throw new Error('--mas is arm64 only; --arch ' + arch + ' is refused');
+  if (mas && (buildPkg || buildDmg)) throw new Error('--mas builds the .app only; packaging and signing go through sign-mas.sh');
   if (process.platform !== 'darwin') {
     throw new Error('Native packaging is refused on Linux/Windows; requires macOS.');
   }
@@ -345,16 +501,7 @@ export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, bu
   try { await fs.access(absArchive); } catch { throw new Error(`Missing archive: ${absArchive}`); }
   
   const actualHash = await getHash(absArchive);
-  let targetArch = null;
-  for (const [arch, expectedHash] of Object.entries(ARCHIVE_HASHES)) {
-    if (actualHash === expectedHash) {
-      targetArch = arch;
-      break;
-    }
-  }
-  if (!targetArch) {
-    throw new Error(`Archive hash ${actualHash} does not match any official Electron ${PINNED_VERSION} macOS pin.`);
-  }
+  const targetArch = matchArchive(actualHash, mas);
 
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'blastcast-mac-stage-'));
   
@@ -367,8 +514,15 @@ export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, bu
       sourceDir,
       outDir,
       targetArch,
-      archiveVerification: { digest: actualHash, source: absArchive }
+      archiveVerification: { digest: actualHash, source: absArchive },
+      mas, helperPath, helperBuildinfo, buildNumber
     });
+    if (mas) {
+      // sign-mas.sh signs a copy; no ad-hoc re-seal here.
+      res.inventory.status.signing = 'unsigned; sign-mas.sh signs a copy for the Mac App Store';
+      await fs.writeFile(path.join(res.appPath, 'Contents', 'Resources', 'inventory.json'), JSON.stringify(res.inventory, null, 2));
+      return res;
+    }
 
     // Re-seal the changed bundle and its nested ad-hoc Electron components.
     res.inventory.status.signing = 'ad-hoc development signature; no Developer ID or notarization';
@@ -408,7 +562,7 @@ export async function buildNativeMacPackage({ archivePath, sourceDir, outDir, bu
 if (typeof process !== 'undefined' && process.argv && process.argv.length > 1 && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   const args = process.argv.slice(2);
   const flags = new Set();
-  let archivePath, sourceDir, outDir, buildDmg = false, buildPkg = false;
+  let archivePath, sourceDir, outDir, buildDmg = false, buildPkg = false, mas = false, arch = null, helperPath = null, helperBuildinfo = null, buildNumber = null;
   
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -423,6 +577,11 @@ if (typeof process !== 'undefined' && process.argv && process.argv.length > 1 &&
     else if (arg === '--out') { outDir = args[++i]; }
     else if (arg === '--dmg') { buildDmg = true; }
     else if (arg === '--pkg') { buildPkg = true; }
+    else if (arg === '--mas') { mas = true; }
+    else if (arg === '--arch') { arch = args[++i]; }
+    else if (arg === '--helper') { helperPath = args[++i]; }
+    else if (arg === '--helper-buildinfo') { helperBuildinfo = args[++i]; }
+    else if (arg === '--build-number') { buildNumber = args[++i]; }
     else {
       console.error(`Unknown flag: ${arg}`);
       process.exit(1);
@@ -430,7 +589,7 @@ if (typeof process !== 'undefined' && process.argv && process.argv.length > 1 &&
   }
   
   if (!archivePath || !sourceDir || !outDir) {
-    console.error('Usage: node package.mjs --archive <path> --app <path> --out <path> [--pkg] [--dmg]');
+    console.error('Usage: node package.mjs --archive <path> --app <path> --out <path> [--pkg] [--dmg]\n   or: node package.mjs --mas --archive <mas zip> --app <app dir with MAS dist/> --helper <ssh> [--helper-buildinfo <BUILDINFO.txt>] --out <path>\n   either mode also takes: [--build-number <n>] (sets CFBundleVersion)');
     process.exit(1);
   }
 
@@ -439,7 +598,8 @@ if (typeof process !== 'undefined' && process.argv && process.argv.length > 1 &&
     sourceDir,
     outDir,
     buildDmg,
-    buildPkg
+    buildPkg,
+    mas, arch, helperPath, helperBuildinfo, buildNumber
   }).then(res => {
     console.log(`Successfully packaged to ${res.packagePath || res.appPath}`);
   }).catch(err => {

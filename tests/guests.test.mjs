@@ -403,16 +403,21 @@ describe('guest HTTP boundary', () => {
     assert.equal(res.headers['x-frame-options'], 'DENY');
     assert.equal(res.headers['x-content-type-options'], 'nosniff');
     assert.equal(res.headers['cache-control'], 'no-store');
-    for (const [asset, mime] of [['/camera-background.js', 'text/javascript'], ['/bodypix/tf.min.js', 'text/javascript'],
-      ['/bodypix/body-pix.min.js', 'text/javascript'], ['/bodypix/model-stride16.json', 'application/json'],
-      ['/bodypix/group1-shard1of1.bin', 'application/octet-stream'], ['/bodypix/NOTICE.txt', 'text/plain; charset=utf-8']]) {
+    for (const [asset, mime] of [['/camera-background.js', 'text/javascript'], ['/mediapipe/vision_bundle.mjs', 'text/javascript'],
+      ['/mediapipe/wasm/vision_wasm_internal.js', 'text/javascript'], ['/mediapipe/wasm/vision_wasm_nosimd_internal.js', 'text/javascript'],
+      ['/mediapipe/wasm/vision_wasm_internal.wasm', 'application/wasm'], ['/mediapipe/wasm/vision_wasm_nosimd_internal.wasm', 'application/wasm'],
+      ['/mediapipe/selfie_segmenter.tflite', 'application/octet-stream'], ['/mediapipe/NOTICE.txt', 'text/plain; charset=utf-8']]) {
       const assetResponse = await request(port, 'GET', asset, { host: 'test.example.com' });
       assert.equal(assetResponse.status, 200, asset); assert.equal(assetResponse.headers['content-type'], mime, asset);
     }
-    const graphModel = await request(port, 'GET', '/bodypix/model-stride16.json?tfjs-format=file', { host: 'test.example.com' });
-    assert.equal(graphModel.status, 200); assert.equal(graphModel.headers['content-type'], 'application/json');
-    const rejectedQuery = await request(port, 'GET', '/bodypix/model-stride16.json?redirect=https://example.com', { host: 'test.example.com' });
-    assert.equal(rejectedQuery.status, 404);
+    // ClaudeBWAI — a query string on a mediapipe asset is refused like any other static asset (no special-cased queries remain).
+    for (const query of ['?tfjs-format=file', '?redirect=https://example.com']) {
+      for (const asset of ['/mediapipe/selfie_segmenter.tflite', '/mediapipe/wasm/vision_wasm_internal.wasm']) {
+        assert.equal((await request(port, 'GET', asset + query, { host: 'test.example.com' })).status, 404, asset + query);
+      }
+    }
+    // The wasm loaders and the page need 'wasm-unsafe-eval'; connect-src stays 'self'.
+    assert.match(res.headers['content-security-policy'], /script-src 'self' 'wasm-unsafe-eval';/);
     await guests.stop();
   });
 

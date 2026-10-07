@@ -1,0 +1,30 @@
+MediaPipe offline camera background assets
+
+Copyright Google LLC
+
+This distribution includes:
+- @mediapipe/tasks-vision 1.0.1 browser bundle and WebAssembly runtime (vision_bundle.mjs, wasm/vision_wasm_internal.*, wasm/vision_wasm_nosimd_internal.*)
+- MediaPipe Selfie Segmentation model selfie_segmenter.tflite (float16, version 1)
+
+Sources:
+@mediapipe/tasks-vision 1.0.1 from the npm registry (package.json license "Apache-2.0"; tarball sha256 ee318eaa3d42230aa10910d114faf2a488c577c4e4d33c7cb04126924aca505f); https://github.com/google-ai-edge/mediapipe
+https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite
+Model card "MediaPipe Selfie Segmentation" (Google, 6 May 2021; Tingbo Hou, Siargey Pisarchyk, Karthik Raveendran): "Licensed under Apache License, Version 2.0".
+
+Both are distributed under the Apache License 2.0. The owner approved replacing
+BodyPix with MediaPipe on 7 October 2026. BlastCast serves these pinned files
+locally and does not fetch them at runtime.
+
+Telemetry: the bundle contains one outside URL, https://odml.pa.googleapis.com/v1/log
+(usage logging). BlastCast blocks it with the Content-Security-Policy
+connect-src 'self'; nothing is sent.
+
+Pinned SHA-256:
+vision_bundle.mjs d885630c297c0b20b1fe86096cb06291c4c8080876f27852e724f24ac603713f
+wasm/vision_wasm_internal.js e170ee67dd4e16c1a6fcd8840a206687e5a59b22c20e4a902bc445b095454d73
+wasm/vision_wasm_internal.wasm 8da277a733926eacd0474b8704b36742d6ec3231c57a860c5b889dff8f1df886
+wasm/vision_wasm_nosimd_internal.js e81d715a3d42cc3373602eb2f7aff795d164934db680e32496b65dab537f9658
+wasm/vision_wasm_nosimd_internal.wasm a28483cd42e74e855bf5ebdb6b40d9b66a5b49e35e95020bc97669e6822a3192
+selfie_segmenter.tflite 191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b
+
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0

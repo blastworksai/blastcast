@@ -27,13 +27,17 @@ export function validateTerms({ mode, terms, approval, fixture }) {
   } else throw new Error('Choose review or release mode.');
   return sha256;
 }
-export function renderWizard({ files, payload, output, icon, termsFile, version, mode }) {
+export function renderWizard({ files, payload, output, icon, termsFile, version, mode, signCommand }) {
   validatePayload(files);
   if (!/^\d{1,3}\.\d{1,3}\.\d{1,5}$/.test(version)) throw new Error('A three-part product version is required.');
   const dirs = [...new Set(files.map(f => path.posix.dirname(f)).filter(d => d !== '.'))];
   for (const dir of [...dirs]) { let parent = path.posix.dirname(dir); while (parent !== '.') { if (!dirs.includes(parent)) dirs.push(parent); parent = path.posix.dirname(parent); } }
   dirs.sort((a, b) => b.split('/').length - a.split('/').length || b.localeCompare(a));
-  const ownedFiles = files.map(file => `Delete "$INSTDIR\\${nsisLiteral(file.replaceAll('/', '\\'))}"`).join('\n');
+  // ClaudeBWAI — einh 4 Oct: every owned-file Delete is checked; a file that cannot go is counted and named, never ignored. (Name goes first: a variable cannot be followed by a letter.)
+  const ownedFiles = files.map((file, i) => {
+    const rel = nsisLiteral(file.replaceAll('/', '\\'));
+    return `ClearErrors\nDelete "$INSTDIR\\${rel}"\nIfErrors 0 del_${i}_ok\nIntOp $LeftCount $LeftCount + 1\nIntCmp $LeftShown 10 del_${i}_ok 0 del_${i}_ok\nStrLen $0 $LeftNames\nIntCmp $0 600 del_${i}_ok 0 del_${i}_ok\nStrCpy $LeftNames "${rel}$\\r$\\n$LeftNames"\nIntOp $LeftShown $LeftShown + 1\ndel_${i}_ok:`;
+  }).join('\n');
   const removeDirs = dirs.map(dir => `RMDir "$INSTDIR\\${nsisLiteral(dir.replaceAll('/', '\\'))}"`).join('\n');
   const copy = files.map(file => `SetOutPath "$INSTDIR${path.posix.dirname(file) === '.' ? '' : '\\' + nsisLiteral(path.posix.dirname(file).replaceAll('/', '\\'))}"\nFile "${nsisLiteral(path.win32.join(payload, ...file.split('/')))}"\nIfErrors install_failed`).join('\n');
   const review = mode === 'review';
@@ -53,10 +57,19 @@ Var ShortcutDialog
 Var FailedOperation
 Var AppFolderCreated
 Var StartFolderCreated
+Var LeftCount
+Var LeftNames
+Var LeftShown
+Var ReplaceExisting
+Var OldDir
+Var OldAppCreated
 SetCompressor /SOLID zlib
 Name "BlastCast${review ? ' REVIEW ONLY' : ''}"
 OutFile "${nsisLiteral(output)}"
-InstallDir "$PROGRAMFILES64\\BlastCast"
+${signCommand ? `; ClaudeBWAI — einh 4 Oct: sign Setup.exe and the uninstaller inside makensis, so the reported hash is the signed one.
+!uninstfinalize '${signCommand.replaceAll('$', '$$$$')} "%1"' = 0
+!finalize '${signCommand.replaceAll('$', '$$$$')} "%1"' = 0
+` : ''}InstallDir "$PROGRAMFILES64\\BlastCast"
 RequestExecutionLevel admin
 ManifestDPIAware true
 VIProductVersion "${version}.0"
@@ -83,6 +96,7 @@ Page custom ShortcutOptions ShortcutOptionsLeave
 Function .onInit
 StrCpy $DesktopChoice 0
 StrCpy $StartMenuChoice 1
+StrCpy $ReplaceExisting 0
 SetRegView 64
 SetShellVarContext all
 IfSilent silent_not_supported interactive_setup
@@ -109,7 +123,32 @@ Abort
 legacy_clear:
 ReadRegStr $0 HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BlastCast" "UninstallString"
 StrCmp $0 "" nsis_clear
-MessageBox MB_OK|MB_ICONINFORMATION "BlastCast is already installed. Remove its application through Windows Settings > Apps before installing this version. Recordings and your profile are preserved."
+; ClaudeBWAI — einh 4 Oct: an installed BlastCast is replaced when the user clicks Install, but only from an admin-only location (never run an Uninstall.exe from a user-writable folder elevated).
+ReadRegStr $1 HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BlastCast" "InstallLocation"
+StrCmp $1 "" manual_upgrade
+StrLen $2 "$PROGRAMFILES64\\"
+StrCpy $3 $1 $2
+StrCmp $3 "$PROGRAMFILES64\\" 0 manual_upgrade
+; ClaudeBWAI — einh 4 Oct: any ".." in the recorded path could climb out of Program Files, so it is never replaced automatically.
+StrLen $2 $1
+StrCpy $3 0
+dotdot_scan:
+IntCmp $3 $2 dotdot_clear 0 dotdot_clear
+StrCpy $4 $1 2 $3
+StrCmp $4 ".." manual_upgrade
+IntOp $3 $3 + 1
+Goto dotdot_scan
+dotdot_clear:
+MessageBox MB_OKCANCEL|MB_ICONINFORMATION "BlastCast is already installed.$\\r$\\nIt will be replaced when you click Install.$\\r$\\nYour activation, settings and recordings are kept." /SD IDCANCEL IDOK upgrade_accepted
+SetErrorLevel 1602
+Quit
+upgrade_accepted:
+StrCpy $ReplaceExisting 1
+StrCpy $OldDir $1
+StrCpy $INSTDIR $1
+Goto nsis_clear
+manual_upgrade:
+MessageBox MB_OK|MB_ICONINFORMATION "BlastCast is already installed. Remove its application through Windows Settings > Apps before installing this version. Recordings and your profile are preserved." /SD IDOK
 Abort
 nsis_clear:`}
 FunctionEnd
@@ -133,6 +172,8 @@ Function ShortcutOptionsLeave
 ${review ? '; Review never creates shortcuts.' : 'Call ValidateShortcuts'}
 FunctionEnd
 Function ValidateShortcuts
+; ClaudeBWAI — einh 4 Oct: while an install is waiting to be replaced its own shortcuts exist; the Section validates again after they are removed.
+StrCmp $ReplaceExisting 1 shortcuts_clear
 StrCmp $DesktopChoice 1 0 desktop_clear
 IfFileExists "$DESKTOP\\BlastCast.lnk" shortcut_collision desktop_clear
 desktop_clear:
@@ -148,6 +189,10 @@ Abort
 shortcuts_clear:
 FunctionEnd
 Function ValidateDestination
+; ClaudeBWAI — einh 4 Oct: the empty-folder rule is skipped only for the folder being replaced.
+StrCmp $ReplaceExisting 1 0 destination_checks
+StrCmp $INSTDIR $OldDir destination_ok
+destination_checks:
 Push "$INSTDIR"
 Call DirectoryState
 Pop $0
@@ -176,10 +221,55 @@ destination_ok:
 FunctionEnd
 ${directoryValidation()}
 ${review ? '' : installRecovery()}
+${review ? '' : runningCheck('')}
+${review ? '' : runningCheck('un.')}
 Section "BlastCast"
 ${review ? 'DetailPrint "DRAFT REVIEW ONLY: no application files, shortcuts or registry entries were installed."\nSetAutoClose false' : `SetRegView 64
 SetShellVarContext all
 SetOverwrite try
+; ClaudeBWAI — einh 4 Oct: replace the installed BlastCast now (after terms and folder pages, so cancelling earlier changes nothing). Our $PLUGINSDIR copy of the old uninstaller runs in place with _?= so the original Uninstall.exe stays deletable.
+StrCmp $ReplaceExisting 1 0 replace_skipped
+Call EnsureBlastCastClosed
+ReadINIStr $OldAppCreated "$OldDir\\install-options.ini" "Folders" "AppCreated"
+InitPluginsDir
+ClearErrors
+CopyFiles /SILENT "$OldDir\\Uninstall.exe" "$PLUGINSDIR\\old-uninstall.exe"
+IfErrors replace_failed
+ExecWait '"$PLUGINSDIR\\old-uninstall.exe" _?=$OldDir' $2
+StrCmp $2 0 0 replace_failed
+; ClaudeBWAI — einh 5 Oct: verify BEFORE deleting. The old uninstaller keeps Uninstall.exe, install-options.ini and its registry key on purpose when a file is locked, so nothing is removed until the key is gone AND nothing but those two files remains.
+ReadRegStr $0 HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BlastCast" "UninstallString"
+StrCmp $0 "" 0 replace_failed
+FindFirst $0 $1 "$OldDir\\*.*"
+replace_scan:
+StrCmp $1 "" replace_scan_done
+StrCmp $1 "." replace_scan_next
+StrCmp $1 ".." replace_scan_next
+StrCmp $1 "Uninstall.exe" replace_scan_next
+StrCmp $1 "install-options.ini" replace_scan_next
+FindClose $0
+Goto replace_leftovers
+replace_scan_next:
+FindNext $0 $1
+Goto replace_scan
+replace_scan_done:
+FindClose $0
+Delete "$OldDir\\Uninstall.exe"
+Delete "$OldDir\\install-options.ini"
+IfFileExists "$OldDir\\Uninstall.exe" replace_leftovers
+IfFileExists "$OldDir\\install-options.ini" replace_leftovers
+StrCpy $ReplaceExisting 0
+Goto replace_skipped
+replace_failed:
+MessageBox MB_OK|MB_ICONSTOP "The previous BlastCast could not be removed completely. Run its uninstaller from Windows Settings > Apps, then try again." /SD IDOK
+SetErrorLevel 1603
+Abort
+; ClaudeBWAI — einh 5 Oct: the registry entry is already gone but files remain (an older uninstaller, or a locked file); Settings > Apps has nothing to offer, so name the folder.
+replace_leftovers:
+MessageBox MB_OK|MB_ICONSTOP "BlastCast could not be fully removed from:$\\r$\\n$OldDir$\\r$\\n$\\r$\\nClose any program using files in that folder, delete the files that are left in it, then run setup again." /SD IDOK
+SetErrorLevel 1603
+Abort
+replace_skipped:
 Call ValidateShortcuts
 Call ValidateDestination
 Push "$INSTDIR"
@@ -192,6 +282,9 @@ StrCmp $AppFolderCreated 0 0 app_folder_preexisting
 WriteINIStr "$INSTDIR\\install-options.ini" "Folders" "AppCreated" "1"
 IfErrors install_failed
 app_folder_preexisting:
+StrCmp $OldAppCreated 1 0 old_app_flag_done
+WriteINIStr "$INSTDIR\\install-options.ini" "Folders" "AppCreated" "1"
+old_app_flag_done:
 ${copy}
 SetOutPath "$INSTDIR"
 IfErrors install_failed
@@ -234,7 +327,15 @@ SectionEnd
 Section "Uninstall"
 ${review ? '; Review fixture never installs an uninstaller.' : `SetRegView 64
 SetShellVarContext all
+Call un.EnsureBlastCastClosed
+StrCpy $LeftCount 0
+StrCpy $LeftNames ""
+StrCpy $LeftShown 0
 ${ownedFiles}
+IntCmp $LeftCount 0 uninstall_clean
+MessageBox MB_OK|MB_ICONEXCLAMATION "BlastCast could not remove $LeftCount files, including:$\\r$\\n$LeftNames$\\r$\\nClose any program using them and run the uninstaller again. Your recordings and settings are kept." /SD IDOK
+Goto uninstall_done
+uninstall_clean:
 ReadINIStr $0 "$INSTDIR\\install-options.ini" "Shortcuts" "DesktopCreated"
 StrCmp $0 1 0 no_desktop_removal
 Delete "$DESKTOP\\BlastCast.lnk"
@@ -258,7 +359,8 @@ ${removeDirs}
 StrCmp $AppFolderCreated 1 0 app_folder_preserved
 RMDir "$INSTDIR"
 app_folder_preserved:
-DeleteRegKey HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BlastCast"`}
+DeleteRegKey HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\BlastCast"
+uninstall_done:`}
 SectionEnd
 `;
   return review ? script : checkedInstallWrites(script);
@@ -311,6 +413,53 @@ MessageBox MB_OK|MB_ICONSTOP "Setup could not stop BlastCast processes. Setup wi
 SetErrorLevel 1
 Quit
 recovery_done:
+Pop $1
+Pop $0
+FunctionEnd
+`;
+}
+
+// ClaudeBWAI — einh 4 Oct: one running-BlastCast check for setup and the uninstaller (prefix '' or 'un.').
+// Yes closes BlastCast (taskkill /F, 0 or 128 ok) and waits up to 5 s; No leaves everything unchanged.
+export function runningCheck(prefix) {
+  const detect = `nsExec::ExecToStack 'cmd /c "tasklist /FI "IMAGENAME eq BlastCast.exe" /NH | find /I "BlastCast.exe""'`;
+  return `Function ${prefix}EnsureBlastCastClosed
+Push $0
+Push $1
+Push $2
+${detect}
+Pop $0
+Pop $1
+StrCmp $0 0 0 running_done
+MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "BlastCast is running.$\\r$\\n$\\r$\\nClose BlastCast and continue? This stops active calls and recordings for every user signed in to this PC. Unsaved work may be lost.$\\r$\\n$\\r$\\nYes: close BlastCast and continue. No: exit without changes." /SD IDNO IDYES running_stop
+SetErrorLevel 1602
+Quit
+running_stop:
+nsExec::ExecToStack /TIMEOUT=10000 '"$SYSDIR\\taskkill.exe" /F /IM BlastCast.exe'
+Pop $0
+Pop $1
+StrCmp $0 0 running_poll
+StrCmp $0 128 running_poll
+MessageBox MB_OK|MB_ICONSTOP "BlastCast could not be closed. Nothing was changed; close BlastCast yourself before trying again. Your saved recordings are retained." /SD IDOK
+SetErrorLevel 1
+Quit
+running_poll:
+StrCpy $2 0
+running_loop:
+${detect}
+Pop $0
+Pop $1
+StrCmp $0 0 0 running_done
+IntOp $2 $2 + 1
+StrCmp $2 10 running_stuck
+Sleep 500
+Goto running_loop
+running_stuck:
+MessageBox MB_OK|MB_ICONSTOP "BlastCast is still running. Nothing was changed; close BlastCast yourself before trying again. Your saved recordings are retained." /SD IDOK
+SetErrorLevel 1
+Quit
+running_done:
+Pop $2
 Pop $1
 Pop $0
 FunctionEnd

@@ -2,8 +2,8 @@
 <!-- CodexBWAI — implementation of einh's supplied BlastCast redesign. -->
 <html lang="en" data-theme="dark">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BlastCast · Your studio</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="blastcast.css"><link rel="stylesheet" href="admission.css"><link rel="stylesheet" href="studio.css"><script src="bodypix/tf.min.js"></script><script src="bodypix/body-pix.min.js"></script><script type="module" src="studio.js"></script></head>
-<body><div id="activation-lock" class="activation-lock" hidden><div><img src="logo-icon.svg" alt=""><h1>Activate BlastCast</h1><p>Enter a valid activation key in Settings to use the studio.</p><button id="open-activation" class="primary">Open activation settings</button></div></div><div id="studio" class="bc-studio">
+<title>BlastCast · Your studio</title><link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="blastcast.css"><link rel="stylesheet" href="admission.css"><link rel="stylesheet" href="studio.css"><script type="module" src="studio.js"></script></head>
+<body><!-- non-mas --><div id="activation-lock" class="activation-lock" hidden><div><img src="logo-icon.svg" alt=""><h1>Activate BlastCast</h1><p>Enter a valid activation key in Settings to use the studio.</p><button id="open-activation" class="primary">Open activation settings</button></div></div><!-- /non-mas --><div id="studio" class="bc-studio">
 <header class="bc-topbar"><img class="bc-topbar__logo" src="logo-icon.svg" alt=""><h1 class="bc-topbar__name">BlastCast</h1><div class="bc-grow"></div><span id="shell-status" class="bc-status" role="status">Devices off</span><span id="recording-live" class="recording-live" hidden>● LIVE</span><button id="open-settings" class="secondary" aria-haspopup="dialog">Settings</button></header>
 <div class="bc-studio__body">
 <main class="bc-studio__main" aria-label="Studio preview">
@@ -23,7 +23,7 @@
 <p id="preview-status" class="status" role="status">Your camera and microphone are off.</p><button id="open-privacy-settings" class="secondary" type="button" hidden>Open System Settings</button><div id="device-notices" class="device-notices" aria-live="polite" hidden></div>
 </main>
 <aside class="bc-panel" aria-label="Session">
-<div class="bc-tabs" role="tablist" aria-label="Session panels"><button id="guests-tab" class="bc-tab" role="tab" aria-selected="true" aria-controls="guests-pane">Guests <span id="guest-count" class="bc-tab__count">0</span></button><button id="recordings-tab" class="bc-tab" role="tab" aria-selected="false" aria-controls="recordings-pane" tabindex="-1">Recordings <span id="recording-count" class="bc-tab__count">0</span></button></div>
+<div class="bc-tabs" role="tablist" aria-label="Session panels"><button id="guests-tab" class="bc-tab" role="tab" aria-selected="true" aria-controls="guests-pane">Guests <span id="guest-count" class="bc-tab__count">0</span></button><button id="recordings-tab" class="bc-tab" role="tab" aria-selected="false" aria-controls="recordings-pane" tabindex="-1">Recordings <span id="recording-count" class="bc-tab__count">0</span></button><button id="chat-tab" class="bc-tab" role="tab" aria-selected="false" aria-controls="chat-pane" tabindex="-1">Chat <span id="chat-count" class="bc-tab__count">0</span></button></div>
 <section id="guests-pane" class="bc-panel__body" role="tabpanel" aria-labelledby="guests-tab">
 <div class="host-row"><strong>You</strong><span class="bc-meta">Host</span></div>
 <div id="guest-empty" class="bc-empty"><h2 class="bc-heading">No guests yet</h2><p class="bc-body">Create an invite link and send it. Guests wait here until you admit them.</p></div>
@@ -49,7 +49,8 @@
             <button id="finish-originals" class="secondary" disabled>Finish with missing originals…</button></div>
         </section>
 
-</section></aside></div>
+</section>
+<section id="chat-pane" class="bc-panel__body" role="tabpanel" aria-labelledby="chat-tab" hidden><div id="chat-root" class="chat-root"></div></section></aside></div>
 <div id="shell-errors" class="shell-errors" role="alert" hidden></div>
 <footer class="bc-bottombar">
 <section class="device-controls" aria-labelledby="devices-heading"><h2 id="devices-heading" class="sr-only">Camera and microphone</h2>
@@ -62,7 +63,7 @@
 <p id="device-status" class="small status" role="status">Choose camera or microphone to allow access and list devices.</p>
 </footer>
 <dialog id="studio-settings" aria-labelledby="settings-heading"><div class="settings-heading"><h2 id="settings-heading">Settings</h2><button id="close-settings" class="secondary">Close</button></div>
-<section id="activation-card" class="setup-card" aria-labelledby="activation-heading"><h3 id="activation-heading">Activation</h3><p class="small">BlastCast requires a key purchased from Blastworks.ai or issued directly by Blastworks.ai.</p><div id="activation-entry"><label for="activation-key">Activation key</label><textarea id="activation-key" rows="4" autocomplete="off" spellcheck="false" placeholder="BCAST1.…"></textarea><div class="preview-controls"><button id="activate-license" class="primary">Activate BlastCast</button></div></div><div id="activation-current" hidden><p class="small">Activated for <strong id="activation-holder"></strong> · <span id="activation-kind"></span></p><button id="deactivate-license" class="secondary">Deactivate on this computer</button></div><p id="activation-status" class="small status" role="status">Checking activation…</p></section>
+<!-- non-mas --><section id="activation-card" class="setup-card" aria-labelledby="activation-heading"><h3 id="activation-heading">Activation</h3><p class="small">BlastCast requires a key purchased from Blastworks.ai or issued directly by Blastworks.ai.</p><div id="activation-entry"><label for="activation-key">Activation key</label><textarea id="activation-key" rows="4" autocomplete="off" spellcheck="false" placeholder="BCAST1.…"></textarea><div class="preview-controls"><button id="activate-license" class="primary">Activate BlastCast</button></div></div><div id="activation-current" hidden><p class="small">Activated for <strong id="activation-holder"></strong> · <span id="activation-kind"></span></p><button id="deactivate-license" class="secondary">Deactivate on this computer</button></div><p id="activation-status" class="small status" role="status">Checking activation…</p></section><!-- /non-mas -->
 <section class="setup-card" aria-labelledby="backdrops-heading"><h3 id="backdrops-heading">Upload backdrops</h3><p class="small">Choose one 1920 × 1080 PNG for each layout. Camera layouts need transparent camera openings matching that layout. Screen-share backgrounds sit behind the dynamically positioned frames.</p><div id="backdrop-layouts" class="backdrop-layouts"></div><p id="backdrop-status" class="status" role="status">Loading saved backdrops…</p></section>
 <section class="setup-card"><h3>Devices and output</h3><label for="quality">Recording quality</label><select id="quality"><option value="1080">1080p</option><option value="2160">4K</option></select><p class="small">4K records a 3840 × 2160 scene and uses more CPU, storage and upload bandwidth. Camera and guest inputs are scaled to fit without changing their originals.</p><button id="refresh-devices" class="text-button">Refresh devices</button></section>
         <section class="setup-card" aria-labelledby="folder-heading">
@@ -73,7 +74,7 @@
           <p id="folder-status" class="small status" role="status">We’ll check that BlastCast can write here.</p>
         </section>
     <footer class="readiness"><span id="ready-dot" class="ready-dot" aria-hidden="true"></span><div><strong id="ready-title">Let’s get your studio ready.</strong><p id="ready-detail">Enable your devices and choose a writable folder.</p></div><span class="slice-label">Local recording</span></footer>
-<section id="software-card" class="setup-card"><h3>BlastCast <span id="app-version"></span></h3><button id="check-updates" class="secondary">View source and releases on GitHub</button><p id="update-status" class="small status" role="status">BlastCast source and release downloads are published in the public GitHub repository.</p></section>
+<section id="software-card" class="setup-card"><h3>BlastCast <span id="app-version"></span></h3><!-- non-mas --><button id="check-updates" class="secondary">View source and releases on GitHub</button><p id="update-status" class="small status" role="status">BlastCast source and release downloads are published in the public GitHub repository.</p><!-- /non-mas --></section>
 </dialog>
 <dialog id="guest-connection" aria-labelledby="guest-heading"><div class="settings-heading"><h2 id="guest-heading">Guest invitations</h2><button id="close-guest-connection" class="secondary">Close</button></div>
     <section id="guest-panel" class="guest-panel" hidden>
@@ -91,6 +92,7 @@
           <h3 id="helper-heading">Guest address</h3><p id="helper-provider" class="small"></p>
           <ol id="helper-steps" class="small"></ol>
           <p id="helper-reference-wrap" class="provider-reference"><a id="helper-reference" href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/" target="_blank" rel="noreferrer">Open the official Cloudflare Tunnel guide ↗</a></p>
+          <p id="cloudflare-one-computer-note" class="small field-help">Run the Cloudflare tunnel only on the computer that runs BlastCast. A tunnel replica on another computer sends guests there, and they get an error (Bad gateway, 502).</p>
           <figure id="cloudflare-ready-figure" class="instruction-figure"><img src="instructions/cloudflare-tunnel-ready.png" alt="Cloudflare tunnel overview showing one active replica, Healthy status, and the Add route control."><figcaption>After steps 1 and 2, the tunnel shows <strong>Healthy</strong>. Your identifiers are omitted here.</figcaption></figure>
           <figure id="cloudflare-route-form-figure" class="instruction-figure"><img src="instructions/cloudflare-route-form.png" alt="Cloudflare Add published application form with guests.example.com, an empty path, and Service URL http://127.0.0.1:43821."><figcaption>For step 3, open <strong>Routes</strong>, click <strong>Add route</strong>, choose <strong>Published application</strong>, and enter <strong>http://127.0.0.1:43821</strong> as the Service URL.</figcaption></figure>
           <figure id="cloudflare-route-ready-figure" class="instruction-figure"><img src="instructions/cloudflare-route-ready.png" alt="Completed Cloudflare Published application route pointing guests.example.com to http://127.0.0.1:43821."><figcaption>Done: the route table shows <strong>Published application</strong> and <strong>http://127.0.0.1:43821</strong>.</figcaption></figure>

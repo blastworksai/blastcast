@@ -35,3 +35,18 @@ meter { width: 100%; height: 14px; }
 
 .notice { margin: 8px 0; padding: 8px 12px; border: 1px solid #ffab01; border-radius: 8px; }
 .notice[hidden] { display: none; }
+/* ClaudeBWAI — einh 4-5 Oct: live chat (CP7b). The guest page does not load tokens.css, so the amber is spelled out here. */
+.guest-chat { margin: 16px 0; } .guest-chat[hidden] { display: none; }
+.chat-log { height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 6px; border: 1px solid #474747; border-radius: 8px; padding: 10px; background: #191919; }
+.chat-line { overflow-wrap: anywhere; } .chat-name { margin-right: 8px; unicode-bidi: isolate; }
+.chat-name-host { background: #ffab01; color: #232323; padding: 1px 6px; border-radius: 4px; } .chat-name-host::after { content: " · HOST"; font-size: 11px; letter-spacing: .06em; }
+.chat-mine .chat-text { color: #c6c6c6; }
+.chat-form { display: flex; gap: 8px; margin-top: 8px; } .chat-input { flex: 1; min-width: 0; font-size: 16px; padding: 10px; background: #191919; color: #fff; border: 1px solid #666; border-radius: 6px; }
+.chat-overlay { position: fixed; left: 8px; right: 8px; top: calc(env(safe-area-inset-top, 0px) + 8px); z-index: 2147483000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; max-height: 35vh; overflow: hidden; }
+.chat-overlay > * { pointer-events: auto; } .chat-banners { display: flex; flex-direction: column; gap: 8px; }
+.chat-banner { display: flex; align-items: center; gap: 10px; background: #ffab01; color: #232323; border: 3px solid #232323; border-radius: 10px; padding: 12px 14px; font-size: 20px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.chat-banner .chat-name { margin-right: 0; background: #232323; color: #ffab01; padding: 1px 8px; border-radius: 4px; }
+.chat-banner-text { flex: 1; } .chat-banner-close { background: #232323; color: #ffab01; border: 0; border-radius: 6px; font-size: 24px; line-height: 1; min-width: 44px; min-height: 44px; padding: 0; }
+.chat-more, .chat-badge { cursor: pointer; align-self: center; background: #232323; color: #ffab01; border: 2px solid #ffab01; border-radius: 999px; padding: 4px 14px; font-weight: 700; font-size: 14px; }
+.chat-more[hidden], .chat-badge[hidden] { display: none; }
+@media (min-width: 781px) { .chat-overlay { left: 50%; right: auto; transform: translateX(-50%); width: min(720px, calc(100vw - 24px)); } }

@@ -520,7 +520,8 @@ function createAdmissionStore(options = {}) {
     let phase = 'redeemed';
     if (s.requestedAt !== null) phase = 'pending';
     if (s.decision === 'admitted') phase = 'admitted';
-    return { ok: true, phase, expiresAt: inv.expiresAt, sessionId: s.id };
+    // ClaudeBWAI — einh 4-5 Oct: the stored admitted name rides along so chat never trusts a client-supplied one.
+    return { ok: true, phase, expiresAt: inv.expiresAt, sessionId: s.id, name: s.name };
   }
 
   /**

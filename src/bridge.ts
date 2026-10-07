@@ -5,6 +5,8 @@ export type FolderResult =
   | { status: 'cancelled' }
   | { status: 'error'; message: string };
 
+// ClaudeBWAI — einh 4-5 Oct: live chat message as the viewer sees it (never another guest's session id).
+export type ChatMessage = { id: number; at: number; name: string; text: string; mine: boolean; host: boolean; history?: boolean };
 export type RecordingResult = { ok: true; id?: string; name?: string; bytes?: number; warning?: string } | { ok: false; message: string };
 export type RecoveryImportResult = { ok: true; episodeId: string; participantId: string; epochs: number; bytes: number;
   complete: boolean; unchanged: boolean } | { ok: false; message: string; cancelled?: boolean };
@@ -56,7 +58,7 @@ export type DirectAccessStatus =
 
 export type GuestSettingsInput = {domain:'yes'|'no';origin:string;port:number;helper:HelperInput;freeRouteAcknowledged?:boolean};
 export type GuestSettingsResult = {ok:true;settings:(GuestSettingsInput & {credentialSaved:true})|null}|{ok:false;message:string};
-export type LicenseStatus = {active:true;license:{licenseId:string;holder:string;kind:'owner'|'test'|'customer';issuedAt:string};message?:string}|{active:false;message?:string};
+export type LicenseStatus = {active:true;license:{licenseId:string;holder:string;kind:'owner'|'test'|'customer';issuedAt:string}|{kind:'app-store'};message?:string}|{active:false;message?:string};
 // ClaudeBWAI — contract for the 0.2.3 rebuild: macOS privacy status, host background preferences.
 export type MediaAccessState = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
 export type CameraBackgroundPreference = 'off' | 'blur' | 'image';
@@ -67,7 +69,7 @@ export interface DesktopBridge {
   clearGuestSettings():Promise<GuestSettingsResult>;
   generateSavedGuestInvite():Promise<GuestStatus>;
   startFreeGuestAccess(input:{port:number;helper:HelperInput;privacyAcknowledged:boolean}):Promise<GuestStatus>;
-  appInfo():Promise<{version:string;updates:string}>;
+  appInfo():Promise<{version:string;updates:string|null}>;
   licenseStatus():Promise<LicenseStatus>;
   activateLicense(key:string):Promise<LicenseStatus>;
   deactivateLicense():Promise<LicenseStatus>;
@@ -85,6 +87,9 @@ export interface DesktopBridge {
   loadBackgroundImage():Promise<{ok:true;dataUrl:string|null}|{ok:false;message:string}>;
   clearBackgroundImage():Promise<{ok:boolean;message?:string}>;
   configureGuests(config: { origin: string; port: number; routeType: 'direct' | 'tunnel'; helper?: HelperInput }): Promise<GuestStatus>;
+  chatSend(text: string): Promise<{ ok: true; message: ChatMessage } | { ok: false; reason: 'invalid' | 'rate-limited' }>;
+  chatSince(id: number): Promise<{ ok: true; messages: ChatMessage[]; latestId: number }>;
+  chatAttention(count: number): Promise<{ ok: true }>;
   guestStatus(): Promise<GuestStatus>;
   getGuestCallConfiguration(sessionId: string): Promise<CallConfiguration>;
   copyGuestReadiness(): Promise<{ ok: boolean; message?: string }>;
@@ -120,7 +125,7 @@ export interface DesktopBridge {
   authorizePreview(): Promise<boolean>;
   chooseScreen(): Promise<{ ok: boolean; cancelled?: boolean; blocked?: boolean; message?: string }>;
   getMediaAccessStatus():Promise<{camera:MediaAccessState;microphone:MediaAccessState}>;
-  openPrivacySettings(kind:'camera'|'microphone'):Promise<{ok:boolean;message?:string}>;
+  openPrivacySettings(kind:'camera'|'microphone'|'screen'):Promise<{ok:boolean;message?:string}>;
   chooseFolder(): Promise<FolderResult>;
   checkFolder(): Promise<FolderResult>;
   openFolder(): Promise<{ ok: boolean; message?: string }>;

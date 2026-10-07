@@ -19,20 +19,27 @@ test('darwin granted, linux and windows show nothing and never ask', () => {
   assert.equal(screenBlockedMessage({ platform: 'darwin', getStatus: () => 'granted' }), null);
   for (const platform of ['linux', 'win32']) assert.equal(screenBlockedMessage({ platform, getStatus: () => { throw new Error('must not ask'); } }), null);
 });
-test('chooseScreen refuses with the message and opens no picker when blocked; unchanged otherwise', async () => {
-  let opened = 0, disarmed = 0, armed = 0;
-  const permission = { breach: () => false, takeInput: () => true, disarm: () => { disarmed++; }, arm: () => { armed++; } };
-  const picker = { active: false, choose: async () => { opened++; return { id: 's' }; } };
-  const blocked = createChooseScreen({ permission, picker, getContents: () => null, screenBlocked: () => MESSAGE });
+// 3.6a: the old assertions pinned a silent pre-picker short-circuit in chooseScreen and main's screenBlocked wiring into it; both replaced.
+test('chooseScreen passes a picker blocked result through with the message, arms nothing; a real pick still arms', async () => {
+  let armed = 0;
+  const permission = { breach: () => false, takeInput: () => true, disarm: () => {}, arm: () => { armed++; } };
+  const blocked = createChooseScreen({ permission, picker: { active: false, choose: async () => ({ blocked: true, message: MESSAGE }) }, getContents: () => null });
   assert.deepEqual(await blocked(), { ok: false, blocked: true, message: MESSAGE });
-  assert.equal(opened, 0); assert.equal(armed, 0);
-  const fine = createChooseScreen({ permission, picker, getContents: () => null, screenBlocked: () => null });
-  assert.deepEqual(await fine(), { ok: true }); assert.equal(opened, 1);
-  assert.deepEqual(await createChooseScreen({ permission, picker, getContents: () => null })(), { ok: true });
+  assert.equal(armed, 0);
+  const fine = createChooseScreen({ permission, picker: { active: false, choose: async () => ({ id: 's' }) }, getContents: () => null });
+  assert.deepEqual(await fine(), { ok: true }); assert.equal(armed, 1);
 });
-test('main wires the real platform and status reader; the studio shows the message', () => {
+test('chooseScreen no longer short-circuits before the picker', () => {
+  const boundary = readFileSync(new URL('../desktop/boundary.cjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(boundary, /screenBlocked\(\)/);
+});
+test('main hands the status gate to the picker, not to chooseScreen', () => {
   const main = readFileSync(new URL('../desktop/main.cjs', import.meta.url), 'utf8');
-  assert.match(main, /screenBlocked: \(\) => screenBlockedMessage\(\{ platform: process\.platform, getStatus: kind => systemPreferences\.getMediaAccessStatus\(kind\) \}\)/);
+  const call = (name) => { const at = main.indexOf(`${name}(`); let depth = 0; for (let i = main.indexOf('(', at); i < main.length; i++) { if (main[i] === '(') depth++; else if (main[i] === ')' && --depth === 0) return main.slice(at, i + 1); } return ''; };
+  assert.match(call('installDisplayPicker'), /screenBlocked:\s*\(\)\s*=>\s*screenBlockedMessage\(\{[^}]*getMediaAccessStatus\(kind\)/);
+  assert.doesNotMatch(call('createChooseScreen'), /screenBlocked/);
+});
+test('the studio shows the blocked message', () => {
   const studio = readFileSync(new URL('../src/studio.ts', import.meta.url), 'utf8');
   assert.match(studio, /chosen\?\.blocked === true[^\n]*throw new ScreenBlockedError\(chosen\.message\)/);
 });

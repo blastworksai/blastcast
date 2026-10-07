@@ -11,13 +11,13 @@ export const ARCHIVE_HASHES = Object.freeze({
 });
 const REQUIRED_APP_FILES = [
   'LICENSE','assets/licensing/public-key.txt','assets/localhost-run-known-hosts.txt','desktop/license-key.cjs','desktop/license-store.cjs',
-  'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
+  'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/chat-ui.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt',
   'dist/recording-status.js',
   'package.json',
   'desktop/signaling.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/peer-call.js', 'dist/audio-mix.js',
-  ...['main', 'preload', 'boundary', 'destination', 'recording', 'webm', 'guests', 'guest-http', 'guest-rate-limit', 'guest-static', 'guest-route', 'guest-readiness', 'guest-status', 'guest-lifecycle', 'guest-api', 'guest-api-source', 'direct-access', 'relay-config', 'admission', 'sources', 'source-recovery', 'source-limits', 'source-import', 'source-controller'].map(name => `desktop/${name}.cjs`),
+  ...['main', 'preload', 'boundary', 'destination', 'licences-window', 'mas-flavour', 'releases-link', 'recording', 'webm', 'guests', 'guest-http', 'guest-rate-limit', 'guest-static', 'guest-route', 'guest-readiness', 'guest-status', 'guest-lifecycle', 'guest-api', 'guest-api-source', 'direct-access', 'relay-config', 'admission', 'chat-room', 'session-diagnostics', 'sources', 'source-recovery', 'source-limits', 'source-import', 'source-controller'].map(name => `desktop/${name}.cjs`),
   ...['source-protocol.js', 'source-bitrate.js', 'source-capture.js', 'source-session.js', 'source-outbox.js', 'source-limits.js', 'source-limits.json', 'source-recovery.js', 'admission-ui.js', 'admission.css', 'scenes.js', 'scene-controls.js', 'screen-share-attention.js', 'program-output.js', 'index.html', 'studio.js', 'studio.css', 'invites.js', 'relay-input.js', 'recording.js', 'preview.js','device-access.js', 'camera-background.js', 'guest.html', 'guest.js', 'guest.css', 'readiness.html', 'readiness.js', 'readiness.css', 'package.json', 'Blastworks-Cast-256.png'].map(name => `dist/${name}`),
-  ...['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt'].map(name => `dist/bodypix/${name}`),
+  ...['vision_bundle.mjs','selfie_segmenter.tflite','NOTICE.txt','wasm/vision_wasm_internal.js','wasm/vision_wasm_internal.wasm','wasm/vision_wasm_nosimd_internal.js','wasm/vision_wasm_nosimd_internal.wasm'].map(name => `dist/mediapipe/${name}`),
   ...['cloudflare-tunnel-ready', 'cloudflare-route-form', 'cloudflare-route-ready', 'expressturn-fields'].map(name => `dist/instructions/${name}.png`),
   'assets/brand/Blastworks-Cast-256.png',
   ...['1cam', '2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8'].flatMap(name => [`assets/scenes/defaults/${name}.png`, `dist/${name}.png`]),
@@ -75,7 +75,9 @@ export async function assembleWindowsApp({ app, runtime, output, arch }) {
   for (const area of ['desktop', 'dist', 'assets']) {
     await realDirectory(path.join(app, area));
     for (const file of await files(path.join(app, area))) {
-      if (/\.(?:cjs|js|json|html|css|png|svg|woff2|txt|bin|pem)$/i.test(file)) appFiles.push(path.join(area, file));
+      // ClaudeBWAI — the app serves MediaPipe from dist/mediapipe; the vendored source copy (~22 MB) is not shipped twice.
+      if (area === 'assets' && /^mediapipe[\\/]/.test(file)) continue;
+      if (/\.(?:cjs|js|mjs|json|html|css|png|svg|woff2|txt|bin|pem|wasm|tflite)$/i.test(file)) appFiles.push(path.join(area, file));
     }
   }
   await mkdir(output); // Exclusive: never overwrite an installed app or recordings.

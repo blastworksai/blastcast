@@ -1,5 +1,6 @@
 const { performance } = require('node:perf_hooks');
 const { createAdmissionStore, MAX_GUESTS } = require('./admission.cjs');
+const { createChatRoom } = require('./chat-room.cjs');
 const { createSignalingBroker } = require('./signaling.cjs');
 const { parseRoute, createRouteVerifier, verifyRoute } = require('./guest-route.cjs');
 const { createRateLimiter } = require('./guest-rate-limit.cjs');
@@ -56,8 +57,10 @@ function createGuestServer({ directory, now = Date.now, monotonicNow = () => per
     sourceInFlight: new Map(),
     // ClaudeBWAI — guests whose browser cannot record an original (self-reported, strict boolean). Never in a roster, never waited for.
     originalsUnsupported: new Set(),
+    chat: createChatRoom({ now }), // ClaudeBWAI — einh 4-5 Oct: live chat, in memory only; emptied on revoke / stop / when no admitted guest remains
     handle: null,
   };
+  ctx.chatPrune = () => { if (!ctx.store.hostList().guests.some(g => g.phase === 'admitted')) ctx.chat.clear(); };
   ctx.handle = createHandler(ctx);
   const st = ctx.state;
 
@@ -92,14 +95,17 @@ function createGuestServer({ directory, now = Date.now, monotonicNow = () => per
       return status(ctx);
     },
     revoke() {
-      store.revokeAll();
+      store.revokeAll(); ctx.chat.clear();
       st.latest = null; ctx.opened.clear();
       return status(ctx);
     },
     // Adding internal admission store access so boundary/IPC can call these:
     admit: (sessionId) => store.admitGuest(sessionId),
-    reject: (sessionId) => store.rejectGuest(sessionId),
-    remove: (sessionId) => store.removeGuest(sessionId),
+    reject: (sessionId) => { const r = store.rejectGuest(sessionId); ctx.chatPrune(); return r; },
+    // ClaudeBWAI — einh 4-5 Oct: the host speaks as 'host' with the name 'Host'; chatSince(0) is the host's full room.
+    chatSend: text => ctx.chat.send({ from: 'host', name: 'Host', text }),
+    chatSince: id => ({ ok: true, messages: ctx.chat.since(id, 'host'), latestId: ctx.chat.latestId() }),
+    remove: (sessionId) => { const r = store.removeGuest(sessionId); ctx.chatPrune(); return r; },
     revokeInvite: (inviteId) => store.revokeInvitation(inviteId),
     sendSignal: ctx.signaling.sendGuestSignal,
     pollSignals: ctx.signaling.pollGuestSignals,

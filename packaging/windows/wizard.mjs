@@ -22,9 +22,32 @@ function run(exe, args, options = {}) {
   if (result.error || result.status !== 0) throw new Error(`Native build step failed: ${result.error?.message ?? result.stderr + result.stdout}`);
   return result.stdout;
 }
+// ClaudeBWAI — einh 4 Oct: optional Azure Artifact Signing. All three inputs are absolute paths; none of them is a secret (the env file is read only by sign-windows.ps1).
+export function resolveSigning(options, scriptDir = here) {
+  const { signMetadata, signEnv } = options;
+  if (!signMetadata && !signEnv && !options.signScript) return undefined;
+  if (!signMetadata || !signEnv) throw new Error('Signing needs both --sign-metadata and --sign-env.');
+  const signScript = options.signScript ?? path.join(scriptDir, 'sign-windows.ps1');
+  for (const value of [signMetadata, signEnv, signScript]) if (!path.win32.isAbsolute(value) && !path.isAbsolute(value)) throw new Error('Signing inputs must be absolute paths.');
+  return { metadata: signMetadata, env: signEnv, script: signScript };
+}
+export function signCommandFor(powershell, sign) {
+  const command = `"${powershell}" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "${sign.script}" -Metadata "${sign.metadata}" -EnvFile "${sign.env}"`;
+  if (/['\r\n`%]/.test(command)) throw new Error('Signing paths must not contain quotes, percent signs, backticks or line breaks.');
+  return command;
+}
+export const SIGN_EXTENSIONS = ['.exe', '.dll', '.node'];
+// Signs each file with the injected runner(file); returns the files signed, in order.
+export function signFiles(files, runner) {
+  const signed = [];
+  for (const file of files.filter(f => SIGN_EXTENSIONS.includes(path.extname(f).toLowerCase()))) { runner(file); signed.push(file); }
+  return signed;
+}
+async function walkAbsolute(root) { return (await walk(root)).map(rel => path.join(root, ...rel.split('/'))); }
 export async function buildWizard(options) {
   if (process.platform !== 'win32') throw new Error('Build the Windows wizard on Windows.');
   const { mode, version } = options;
+  const sign = resolveSigning(options);
   const payload = await realpath(options.payload); const png = await realpath(options.png); const nsisArchive = await realpath(options.nsis);
   const terms = await readFile(options.terms, 'utf8');
   const approval = options.approval ? JSON.parse(await readFile(options.approval, 'utf8')) : undefined;
@@ -59,6 +82,11 @@ export async function buildWizard(options) {
   const icon = path.join(output, 'BlastCast.ico');
   run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', path.join(here, 'brand-executable.ps1'), '-Executable', path.join(staging, 'BlastCast.exe'), '-Png', png, '-Icon', icon, '-Version', version]);
   await rename(path.join(staging, 'BlastCast.exe.branding.json'), path.join(output, 'branding-report.json'));
+  const signRunner = options.signRunner ?? (file => run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', sign.script, '-Metadata', sign.metadata, '-EnvFile', sign.env, file]));
+  if (sign) { // signing hook: after branding (it rewrites the exe), before the inventory hashes
+    signFiles(await walkAbsolute(staging), signRunner);
+    signFiles(await walkAbsolute(path.join(nsis, 'Plugins', 'x86-unicode')), signRunner); // plugin DLLs end up inside Setup.exe
+  }
   if (mode === 'release') await cp(icon, path.join(staging, 'resources', 'app', 'assets', 'brand', 'BlastCast.ico'));
   await writeFile(path.join(staging, 'NSIS-NOTICES.txt'), await readFile(path.join(nsis, 'COPYING')));
   if (mode === 'release') await writeFile(path.join(staging, 'BlastCast-Terms.txt'), terms);
@@ -67,9 +95,9 @@ export async function buildWizard(options) {
   await writeFile(path.join(output, 'terms-render-report.json'), termsDecodeReport);
   let files = await walk(staging);
   if (mode === 'release') {
-    await writeFile(path.join(staging, 'READ-ME.txt'), 'BlastCast desktop application\r\nOpen BlastCast from the Windows Start menu. Uninstall through Windows Settings > Apps. Recordings and the application profile are preserved.\r\nPublisher signing is pending; this build is unsigned. No Windows security bypass is part of the installation instructions.\r\n');
+    await writeFile(path.join(staging, 'READ-ME.txt'), `BlastCast desktop application\r\nOpen BlastCast from the Windows Start menu. Uninstall through Windows Settings > Apps. Recordings and the application profile are preserved. Setup upgrades an installed BlastCast for you.\r\n${sign ? 'This build is signed by the publisher through Azure Artifact Signing; Windows SmartScreen may still warn until the signature builds reputation.' : 'Publisher signing is pending; this build is unsigned.'} No Windows security bypass is part of the installation instructions.\r\n`);
     const inventory = JSON.parse(await readFile(path.join(staging, 'blastcast-inventory.json'), 'utf8'));
-    inventory.installer = 'nsis'; inventory.branding = 'approved-native-icon-and-version-resource-update'; inventory.signing = 'unsigned-publisher-signing-pending';
+    inventory.installer = 'nsis'; inventory.branding = 'approved-native-icon-and-version-resource-update'; inventory.signing = sign ? 'azure-artifact-signing' : 'unsigned-publisher-signing-pending';
     inventory.payload = [];
     for (const file of files.filter(f => f !== 'blastcast-inventory.json')) inventory.payload.push({ path: file, bytes: (await lstat(path.join(staging, file))).size, sha256: await hashFile(path.join(staging, file)) });
     await writeFile(path.join(staging, 'blastcast-inventory.json'), JSON.stringify(inventory, null, 2) + '\n');
@@ -77,12 +105,12 @@ export async function buildWizard(options) {
   files = await walk(staging);
   const installer = path.join(output, `BlastCast-${version}-${mode === 'review' ? 'REVIEW-NOT-FOR-INSTALL' : 'Setup'}-x64.exe`);
   const script = path.join(output, 'BlastCast.nsi');
-  await writeFile(script, renderWizard({ files, payload: staging, output: installer, icon, termsFile: termsPath, version, mode }));
+  await writeFile(script, renderWizard({ files, payload: staging, output: installer, icon, termsFile: termsPath, version, mode, signCommand: sign ? signCommandFor(powershell, sign) : undefined }));
   const compilerLog = run(compiler, ['/NOCD', '/V4', script]); await writeFile(path.join(output, 'makensis.log'), compilerLog);
-  const report = { author: 'CodexBWAI', mode, installer, sha256: await hashFile(installer), nsis: { version: NSIS_VERSION, source: NSIS_SOURCE, archiveSha256: NSIS_SHA256, compressor: 'zlib', license: 'zlib/libpng (owner-approved exception)' }, termsSha256, termsStatus: mode === 'review' ? 'draft-review-only' : 'owner-approved', signed: false, installationPerformed: false, installableApplication: mode === 'release' };
+  const report = { author: 'CodexBWAI', mode, installer, sha256: await hashFile(installer), nsis: { version: NSIS_VERSION, source: NSIS_SOURCE, archiveSha256: NSIS_SHA256, compressor: 'zlib', license: 'zlib/libpng (owner-approved exception)' }, termsSha256, termsStatus: mode === 'review' ? 'draft-review-only' : 'owner-approved', signed: Boolean(sign), signing: sign ? 'azure-artifact-signing' : 'unsigned', installationPerformed: false, installableApplication: mode === 'release' };
   await writeFile(path.join(output, 'wizard-build-report.json'), JSON.stringify(report, null, 2) + '\n');
   return report;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const options = {}; for (let i = 2; i < process.argv.length; i += 2) { const key = process.argv[i]?.replace(/^--/, ''); if (!['mode', 'version', 'payload', 'png', 'nsis', 'terms', 'approval', 'output'].includes(key) || !process.argv[i + 1] || Object.hasOwn(options, key)) throw new Error('Expected named build options.'); options[key] = process.argv[i + 1]; } console.log(JSON.stringify(await buildWizard(options), null, 2)); } catch (error) { console.error(error.message); process.exitCode = 1; }
+  try { const options = {}; for (let i = 2; i < process.argv.length; i += 2) { const key = process.argv[i]?.replace(/^--/, ''); if (!['mode', 'version', 'payload', 'png', 'nsis', 'terms', 'approval', 'output', 'sign-metadata', 'sign-env', 'sign-script'].includes(key) || !process.argv[i + 1]) throw new Error('Expected named build options.'); const name = key.replace(/-(\w)/g, (_, c) => c.toUpperCase()); if (Object.hasOwn(options, name)) throw new Error('Expected named build options.'); options[name] = process.argv[i + 1]; } console.log(JSON.stringify(await buildWizard(options), null, 2)); } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

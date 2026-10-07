@@ -134,15 +134,15 @@ function createDisplayPermission({ getContents, authorized = () => true, deviceA
 // ClaudeBWAI — the studio's chooseScreen bridge method: genuine input first, one picker at a time, and a pick arms one
 // grant. A chooseScreen while a grant is outstanding crashes the studio at once rather than waiting for the backstop:
 // that grant was spent outside getDisplayMedia and its stream may be live.
-function createChooseScreen({ permission, picker, getContents, screenBlocked = () => null }) {
+function createChooseScreen({ permission, picker, getContents }) {
   return async () => {
     if (permission.breach('new chooseScreen')) return { ok: false };
-    // ClaudeBWAI — macOS Screen Recording permission, checked before any picker opens (message wording: media-access.cjs).
-    const blocked = screenBlocked();
-    if (blocked) { permission.disarm(); return { ok: false, blocked: true, message: blocked }; }
     if (!permission.takeInput(getContents()) || picker.active) return { ok: false };
     permission.disarm();
     const source = await picker.choose();
+    // ClaudeBWAI — 3.6a: macOS Screen Recording is judged INSIDE the picker, after desktopCapturer.getSources has let macOS prompt
+    // (display-picker.cjs); a blocked result carries our message and never arms a grant. No pre-picker short-circuit.
+    if (source?.blocked === true && typeof source.message === 'string') return { ok: false, blocked: true, message: source.message };
     if (!source) return { ok: false, cancelled: true };
     permission.arm(source);
     return { ok: true };
@@ -160,6 +160,24 @@ function registerGuestBridge(ipc, contents, guests, authorized = () => true) {
     if (!trustedFrame(event, contents()) || args.length !== 1 || typeof args[0] !== 'string' || !idRegex.test(args[0])) throw new Error('Unauthorized call configuration');
     if (!authorized()) throw new Error('BlastCast activation is required.');
     return guests.callConfiguration(args[0]);
+  });
+
+  // ClaudeBWAI — einh 4-5 Oct: host chat. The sender is always the host; the renderer supplies only the text / the last id seen.
+  ipc.handle('blastcast:chatSend', (event, ...args) => {
+    if (!trustedFrame(event, contents()) || args.length !== 1 || typeof args[0] !== 'string') throw new Error('Unauthorized chatSend');
+    if (!authorized()) throw new Error('BlastCast activation is required.');
+    return guests.chatSend(args[0]);
+  });
+  ipc.handle('blastcast:chatSince', (event, ...args) => {
+    if (!trustedFrame(event, contents()) || args.length !== 1 || !Number.isSafeInteger(args[0]) || args[0] < 0) throw new Error('Unauthorized chatSince');
+    if (!authorized()) throw new Error('BlastCast activation is required.');
+    return guests.chatSince(args[0]);
+  });
+
+  ipc.handle('blastcast:chatAttention', (event, ...args) => {
+    if (!trustedFrame(event, contents()) || args.length !== 1 || !Number.isSafeInteger(args[0]) || args[0] < 0) throw new Error('Unauthorized chatAttention');
+    if (!authorized()) throw new Error('BlastCast activation is required.');
+    return guests.chatAttention(args[0]);
   });
 
   const admissionMethods = [

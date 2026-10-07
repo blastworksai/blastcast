@@ -6,13 +6,19 @@ import assert from 'node:assert';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assembleMacApp, transformPlist, createMacInstaller, componentPlist, copyRuntimeBundle, signMacApp, removeMacStagingDirectory, ICON_SIZES } from '../packaging/macos/package.mjs';
+import crypto from 'node:crypto';
+import { assembleMacApp as assembleRaw, loadAssetsCar, ASSETS_CAR_SHA256, transformPlist, createMacInstaller, componentPlist, copyRuntimeBundle, signMacApp, removeMacStagingDirectory, ICON_SIZES } from '../packaging/macos/package.mjs';
 
 describe('macOS Package builder (Layout Assembly)', () => {
-  let tempBase;
-  
+  let tempBase, carFixture;
+  // Task 5.1: every assembly needs a pinned icon catalog; the fixture stands in for the committed Assets.car.
+  const assemble = (opts) => assembleRaw({ assetsCar: carFixture, ...opts });
+
   beforeEach(async () => {
     tempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'blastcast-mac-test-'));
+    const data = Buffer.from('fake-assets-car');
+    carFixture = { path: path.join(tempBase, 'Assets.car.fixture'), sha256: crypto.createHash('sha256').update(data).digest('hex') };
+    await fs.writeFile(carFixture.path, data);
   });
 
   afterEach(async () => {
@@ -36,20 +42,20 @@ describe('macOS Package builder (Layout Assembly)', () => {
 
   async function createFakeApp(sourceDir) {
     const files = [
-      'LICENSE', 'assets/licensing/public-key.txt', 'assets/localhost-run-known-hosts.txt', 'desktop/license-key.cjs', 'desktop/license-store.cjs', 'desktop/admission.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
-      'desktop/destination.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
+      'LICENSE', 'assets/licensing/public-key.txt', 'assets/localhost-run-known-hosts.txt', 'desktop/license-key.cjs', 'desktop/license-store.cjs', 'desktop/admission.cjs', 'desktop/chat-room.cjs', 'desktop/session-diagnostics.cjs', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/recording.cjs',
+      'desktop/destination.cjs', 'desktop/licences-window.cjs', 'desktop/mas-flavour.cjs', 'desktop/releases-link.cjs', 'desktop/boundary.cjs', 'desktop/guests.cjs', 'desktop/guest-http.cjs', 'desktop/guest-rate-limit.cjs', 'desktop/guest-static.cjs', 'desktop/guest-route.cjs', 'desktop/guest-readiness.cjs', 'desktop/guest-status.cjs', 'desktop/guest-lifecycle.cjs', 'desktop/guest-api.cjs', 'desktop/guest-api-source.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/webm.cjs',
       'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs',
-      'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt', 'dist/recording-status.js', 'dist/source-protocol.js','dist/source-bitrate.js','dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js',
+      'desktop/free-tunnel.cjs','desktop/guest-access.cjs','desktop/guest-settings.cjs','desktop/guest-wizard.cjs','dist/invite-automation.js','desktop/recording-library.cjs','desktop/studio-preferences.cjs','desktop/display-picker.cjs','desktop/media-access.cjs','dist/invite-list.js','dist/guest-invite.js','dist/recording-library.js','dist/screen-share.js','dist/studio-shell.js','dist/chat-ui.js','dist/tokens.css','dist/blastcast.css','dist/logo-icon.svg','dist/fonts/BlastworksSans-Regular.woff2','dist/fonts/BlastworksSans-SemiBold.woff2','dist/fonts/BlastworksSans-ExtraBold.woff2','dist/fonts/BlastworksSans-UNLICENSE.txt', 'dist/recording-status.js', 'dist/source-protocol.js','dist/source-bitrate.js','dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js',
       'dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js', 'dist/screen-share-attention.js', 'dist/program-output.js',
       'desktop/signaling.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/peer-call.js', 'dist/audio-mix.js',
-      ...['tf.min.js', 'body-pix.min.js', 'model-stride16.json', 'group1-shard1of1.bin', 'NOTICE.txt'].map(name => `dist/bodypix/${name}`),
+      ...['vision_bundle.mjs', 'selfie_segmenter.tflite', 'NOTICE.txt', 'wasm/vision_wasm_internal.js', 'wasm/vision_wasm_internal.wasm', 'wasm/vision_wasm_nosimd_internal.js', 'wasm/vision_wasm_nosimd_internal.wasm'].map(name => `dist/mediapipe/${name}`),
       ...['1cam', '2cam', '3cam', '4cam', '5cam', '6cam', '7cam', '8cam', 'screensharevert-8', 'screensharehorizont-8'].map(name => `dist/${name}.png`),
       'dist/index.html', 'dist/studio.js', 'dist/studio.css', 'dist/invites.js', 'dist/relay-input.js',
       ...['cloudflare-tunnel-ready', 'cloudflare-route-form', 'cloudflare-route-ready', 'expressturn-fields'].map(name => `dist/instructions/${name}.png`),
       'dist/recording.js', 'dist/preview.js', 'dist/guest.html', 'dist/guest.js', 'dist/guest.css',
       'dist/readiness.html', 'dist/readiness.js', 'dist/readiness.css',
       'dist/Blastworks-Cast-256.png', 'dist/package.json',
-      'assets/brand/Blastworks-Cast-256.png',
+      'assets/brand/Blastworks-Cast-256.png', 'assets/mediapipe/vision_bundle.mjs', // ClaudeBWAI — vendored source copy; must not ship
       'assets/scenes/defaults/1cam.png', 'assets/scenes/defaults/2cam.png',
       'assets/scenes/defaults/3cam.png', 'assets/scenes/defaults/4cam.png',
       'assets/scenes/defaults/5cam.png', 'assets/scenes/defaults/6cam.png',
@@ -60,6 +66,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
       await fs.mkdir(path.dirname(path.join(sourceDir, f)), { recursive: true });
       await fs.writeFile(path.join(sourceDir, f), 'data');
     }
+    await fs.chmod(path.join(sourceDir, 'dist/mediapipe/vision_bundle.mjs'), 0o640); // ClaudeBWAI — npm tarball mode; must ship readable for all
     // ClaudeBWAI: header-only PNGs of the right size are enough for the icns writer.
     await fs.mkdir(path.join(sourceDir, 'assets/brand/icons'), { recursive: true });
     for (const n of ICON_SIZES) {
@@ -82,7 +89,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await createFakeSkeleton(runtimeDir);
     await createFakeApp(sourceDir);
 
-    const res = await assembleMacApp({
+    const res = await assemble({
       runtimeDir,
       sourceDir,
       outDir,
@@ -113,6 +120,12 @@ describe('macOS Package builder (Layout Assembly)', () => {
     
     // Package.json checks (devDependencies stripped)
     const outPkg = JSON.parse(await fs.readFile(path.join(res.appPath, 'Contents', 'Resources', 'app', 'package.json'), 'utf8'));
+    await assert.rejects(fs.stat(path.join(res.appPath, 'Contents', 'Resources', 'app', 'assets', 'mediapipe')), /ENOENT/, 'the vendored MediaPipe source copy ships only once, as dist/mediapipe');
+    await fs.stat(path.join(res.appPath, 'Contents', 'Resources', 'app', 'dist', 'mediapipe', 'selfie_segmenter.tflite'));
+    const unreadable = [];
+    const sweep = async dir => { for (const e of await fs.readdir(dir, { withFileTypes: true })) { const f = path.join(dir, e.name); if (e.isSymbolicLink()) continue; const m = (await fs.stat(f)).mode; if ((m & 0o004) === 0 || (e.isDirectory() && (m & 0o001) === 0)) unreadable.push(f); if (e.isDirectory()) await sweep(f); } };
+    await sweep(path.join(res.appPath, 'Contents', 'Resources', 'app'));
+    assert.deepEqual(unreadable, [], 'every app payload file is readable by non-root users (App Store Connect 90255)');
     assert.strictEqual(outPkg.devDependencies, undefined);
     for (const module of ['guest-settings.cjs', 'guest-wizard.cjs']) {
       assert.strictEqual(
@@ -209,7 +222,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await fs.symlink(escapeTarget, path.join(sourceDir, 'assets', 'sneaky-link'));
 
     await assert.rejects(
-      assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }),
+      assemble({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }),
       /Symlinks not allowed in source app: .*sneaky-link/
     );
   });
@@ -227,7 +240,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await createFakeSkeleton(runtimeDir, `<plist><dict><key>CFBundleName</key><string>E</string></dict></plist>`);
     await createFakeApp(sourceDir);
     await assert.rejects(
-      assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }),
+      assemble({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }),
       /Plist replacement failed/
     );
     
@@ -236,7 +249,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await fs.mkdir(runtimeDir, { recursive: true });
     await createFakeSkeleton(runtimeDir, `<plist><dict><key>CFBundleName</key><string>E</string><key>CFBundleDisplayName</key><string>E</string><key>CFBundleIdentifier</key><string>E</string><key>CFBundleExecutable</key><string>E</string><key>NSCameraUsageDescription</key><string>x</string><key>NSCameraUsageDescription</key><string>duplicate</string></dict></plist>`);
     await assert.rejects(
-      assembleMacApp({ runtimeDir, sourceDir, outDir: outDir + '2', targetArch: 'darwin-x64' }),
+      assemble({ runtimeDir, sourceDir, outDir: outDir + '2', targetArch: 'darwin-x64' }),
       /NSCameraUsageDescription occurred 2 times/
     );
     
@@ -245,7 +258,7 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await fs.mkdir(runtimeDir, { recursive: true });
     await createFakeSkeleton(runtimeDir, `<plist><dict><key>CFBundleName</key><string>E</string><key>CFBundleDisplayName</key><string>E</string><key>CFBundleIdentifier</key><string>E</string><key>CFBundleExecutable</key><string>E</string><key>CFBundleExecutable</key><string>E</string></dict></plist>`);
     await assert.rejects(
-      assembleMacApp({ runtimeDir, sourceDir, outDir: outDir + '3', targetArch: 'darwin-x64' }),
+      assemble({ runtimeDir, sourceDir, outDir: outDir + '3', targetArch: 'darwin-x64' }),
       /Plist replacement failed: CFBundleExecutable occurred 2 times/
     );
   });
@@ -268,9 +281,9 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await createFakeSkeleton(runtimeDir); await createFakeApp(sourceDir);
     await fs.rename(path.join(sourceDir, 'assets'), path.join(tempBase, 'outside-assets'));
     await fs.symlink(path.join(tempBase, 'outside-assets'), path.join(sourceDir, 'assets'));
-    await assert.rejects(assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Symlinks not allowed/);
+    await assert.rejects(assemble({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Symlinks not allowed/);
     await fs.mkdir(outDir); await fs.writeFile(path.join(outDir, 'recording.webm'), 'keep');
-    await assert.rejects(assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Existing output/);
+    await assert.rejects(assemble({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Existing output/);
     assert.equal(await fs.readFile(path.join(outDir, 'recording.webm'), 'utf8'), 'keep');
   });
 
@@ -279,15 +292,74 @@ describe('macOS Package builder (Layout Assembly)', () => {
     await fs.mkdir(runtimeDir); await fs.mkdir(sourceDir);
     await createFakeSkeleton(runtimeDir); await createFakeApp(sourceDir);
     for (const missing of ['dist/admission-ui.js', 'dist/admission.css', 'dist/scenes.js', 'dist/scene-controls.js',
-      'desktop/signaling.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/guest-settings.cjs', 'desktop/guest-wizard.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/bodypix/model-stride16.json', 'dist/bodypix/group1-shard1of1.bin', 'dist/peer-call.js', 'dist/audio-mix.js', 'dist/1cam.png', 'dist/screensharevert-8.png',
+      'desktop/signaling.cjs', 'desktop/direct-access.cjs', 'desktop/relay-config.cjs', 'desktop/guest-settings.cjs', 'desktop/guest-wizard.cjs', 'dist/host-calls.js', 'dist/guest-call.js', 'dist/device-access.js', 'dist/camera-background.js', 'dist/mediapipe/selfie_segmenter.tflite', 'dist/mediapipe/wasm/vision_wasm_internal.wasm', 'dist/peer-call.js', 'dist/audio-mix.js', 'dist/1cam.png', 'dist/screensharevert-8.png',
       'assets/brand/icons/blastcast-1024.png', 'assets/brand/icons/blastcast-16.png', 'desktop/sources.cjs', 'desktop/source-recovery.cjs', 'desktop/source-limits.cjs', 'desktop/source-import.cjs', 'desktop/source-controller.cjs', 'dist/recording-status.js', 'dist/source-protocol.js','dist/source-bitrate.js','dist/source-capture.js', 'dist/source-session.js', 'dist/source-outbox.js', 'dist/source-limits.js', 'dist/source-limits.json', 'dist/source-recovery.js']) {
       const file = path.join(sourceDir, missing), contents = await fs.readFile(file);
       await fs.rm(file);
       const outDir = path.join(tempBase, 'out');
-      await assert.rejects(assembleMacApp({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Missing required asset/);
+      await assert.rejects(assemble({ runtimeDir, sourceDir, outDir, targetArch: 'darwin-x64' }), /Missing required asset/);
       await assert.rejects(fs.lstat(outDir), { code: 'ENOENT' });
       await fs.writeFile(file, contents);
     }
+  });
+
+  async function stage() {
+    const runtimeDir = path.join(tempBase, 'runtime'), sourceDir = path.join(tempBase, 'app');
+    await fs.mkdir(runtimeDir); await fs.mkdir(sourceDir);
+    await createFakeSkeleton(runtimeDir); await createFakeApp(sourceDir);
+    return { runtimeDir, sourceDir };
+  }
+
+  it('Task 5.1: copies the pinned Assets.car and sets CFBundleIconName beside CFBundleIconFile', async () => {
+    const res = await assemble({ ...(await stage()), outDir: path.join(tempBase, 'out'), targetArch: 'darwin-arm64' });
+    assert.deepStrictEqual(await fs.readFile(path.join(res.appPath, 'Contents', 'Resources', 'Assets.car')), Buffer.from('fake-assets-car'));
+    const plist = await fs.readFile(path.join(res.appPath, 'Contents', 'Info.plist'), 'utf8');
+    assert.match(plist, /<key>CFBundleIconName<\/key>\s*<string>AppIcon<\/string>/);
+    assert.match(plist, /<key>CFBundleIconFile<\/key>\s*<string>BlastCast\.icns<\/string>/);
+    assert.strictEqual(res.inventory.assetsCar.sha256, carFixture.sha256);
+  });
+
+  it('Task 5.1: refuses a catalog that does not match its pin, a missing one, and a PENDING pin, before creating output', async () => {
+    const dirs = await stage();
+    const outDir = path.join(tempBase, 'out');
+    await assert.rejects(assembleRaw({ ...dirs, outDir, targetArch: 'darwin-arm64', assetsCar: { ...carFixture, sha256: 'a'.repeat(64) } }), /Assets\.car SHA-256 .* does not match the pin/);
+    await assert.rejects(assembleRaw({ ...dirs, outDir, targetArch: 'darwin-arm64', assetsCar: { path: path.join(tempBase, 'nope.car'), sha256: carFixture.sha256 } }), /Missing Assets\.car/);
+    await assert.rejects(assembleRaw({ ...dirs, outDir, targetArch: 'darwin-arm64', assetsCar: { ...carFixture, sha256: 'PENDING' } }), /Assets\.car not pinned yet; run build-icon-assets\.sh on Thor/);
+    await assert.rejects(fs.lstat(outDir), { code: 'ENOENT' });
+  });
+
+  it('Task 5.1: the committed pin is what the CLI path uses, and PENDING refuses it', async () => {
+    if (ASSETS_CAR_SHA256 === 'PENDING') {
+      await assert.rejects(loadAssetsCar(), /Assets\.car not pinned yet/);
+      await assert.rejects(assembleRaw({ ...(await stage()), outDir: path.join(tempBase, 'out'), targetArch: 'darwin-arm64' }), /Assets\.car not pinned yet/);
+    } else {
+      assert.strictEqual((await loadAssetsCar()).sha256, ASSETS_CAR_SHA256);
+    }
+  });
+
+  it('Task 5.1: --build-number sets CFBundleVersion; absent leaves the package version; bad values are refused', async () => {
+    const dirs = await stage();
+    const withBuild = await assemble({ ...dirs, outDir: path.join(tempBase, 'out-b'), targetArch: 'darwin-arm64', buildNumber: '7' });
+    const plist = await fs.readFile(path.join(withBuild.appPath, 'Contents', 'Info.plist'), 'utf8');
+    assert.match(plist, /<key>CFBundleVersion<\/key>\s*<string>7<\/string>/);
+    assert.match(plist, /<key>CFBundleShortVersionString<\/key>\s*<string>0\.1\.0<\/string>/);
+    assert.strictEqual(withBuild.inventory.buildNumber, '7');
+    const plain = await assemble({ ...dirs, outDir: path.join(tempBase, 'out-p'), targetArch: 'darwin-arm64' });
+    assert.match(await fs.readFile(path.join(plain.appPath, 'Contents', 'Info.plist'), 'utf8'), /<key>CFBundleVersion<\/key>\s*<string>0\.1\.0<\/string>/);
+    for (const bad of ['0', '-1', '1.', 'abc', '1.2.3.4', '', '1e3', ' 7']) {
+      await assert.rejects(assemble({ ...dirs, outDir: path.join(tempBase, 'out-x'), targetArch: 'darwin-arm64', buildNumber: bad }), /Invalid --build-number/, bad);
+    }
+    assert.match(transformPlist('<plist><dict><key>CFBundleName</key><string>E</string><key>CFBundleExecutable</key><string>E</string><key>CFBundleIdentifier</key><string>E</string><key>CFBundleIconFile</key><string>e</string></dict></plist>', '0.1.0', { buildNumber: '1.0.7' }), /<key>CFBundleVersion<\/key>\s*<string>1\.0\.7<\/string>/);
+  });
+
+  it('Task 5.1: build-icon-assets.sh parses with bash -n and passes shellcheck when installed', () => {
+    const script = fileURLToPath(new URL('../packaging/macos/build-icon-assets.sh', import.meta.url));
+    const syntax = spawnSync('bash', ['-n', script], { encoding: 'utf8' });
+    assert.strictEqual(syntax.status, 0, syntax.stderr);
+    const probe = spawnSync('shellcheck', ['--version'], { encoding: 'utf8' });
+    if (probe.error) return; // shellcheck not installed here
+    const lint = spawnSync('shellcheck', [script], { encoding: 'utf8' });
+    assert.strictEqual(lint.status, 0, lint.stdout);
   });
 
   it('cli handles arguments and refuses on Linux', async () => {

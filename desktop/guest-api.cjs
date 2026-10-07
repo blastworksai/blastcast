@@ -6,7 +6,7 @@ const { handleReadinessConfirm } = require('./guest-readiness.cjs');
 const { callConfiguration } = require('./guest-status.cjs');
 const { sourceRoutes } = require('./guest-api-source.cjs');
 
-const ALLOWED_POSTS = ['/api/redeem', '/api/preview', '/api/join', '/api/status', '/api/leave', '/api/call/send', '/api/call/poll', '/api/call/config', '/api/source/status', '/api/source/begin', '/api/source/chunk', '/api/source/finish', '/api/page-gone'];
+const ALLOWED_POSTS = ['/api/redeem', '/api/preview', '/api/join', '/api/status', '/api/leave', '/api/call/send', '/api/call/poll', '/api/call/config', '/api/source/status', '/api/source/begin', '/api/source/chunk', '/api/source/finish', '/api/page-gone', '/api/chat/send', '/api/chat/poll'];
 const TOO_MANY = { message: 'Too many requests. Wait a moment and retry.' };
 const invalid = response => send(response, 400, { message: 'Invalid request.' });
 
@@ -22,7 +22,7 @@ function leave(ctx, request, response, { token, body, statusRes }) {
   if (Object.keys(body).length > 0) { invalid(response); return; }
   ctx.store.leaveSession(token);
   ctx.limiter.forget(`s:${statusRes.sessionId}`);
-  ctx.signaling.pruneAll();
+  ctx.signaling.pruneAll(); ctx.chatPrune();
   send(response, 200, { ok: true, phase: 'left' });
 }
 
@@ -48,6 +48,29 @@ function callPoll(ctx, request, response, { token, body }) {
   send(response, 200, res);
 }
 
+// ClaudeBWAI — einh 4-5 Oct: live chat. The sender name is the stored admitted name; the body is exactly {text} / {since}.
+function admittedNow(ctx, response, token) {
+  const a = ctx.store.guestStatus(token);
+  if (!a.ok || a.phase !== 'admitted') { send(response, 410, { message: 'Guest session is closed.' }); return null; }
+  return a;
+}
+// Wire cursor: ids a guest sees are the room's ids + 1 and the cursor it returns is latestId() + 1, so a guest's cursor is >= 1 after its very
+// first poll even in an empty room. since === 0 therefore means exactly "I have not polled yet" (history); every later poll is live.
+const wireLine = m => ({ ...m, id: m.id + 1 });
+function chatSend(ctx, request, response, { token, body }) {
+  if (Object.keys(body).length !== 1 || !('text' in body)) { invalid(response); return; }
+  const a = admittedNow(ctx, response, token); if (!a) return;
+  const res = ctx.chat.send({ from: a.sessionId, name: a.name, text: body.text });
+  if (!res.ok) { if (res.reason === 'rate-limited') send(response, 429, TOO_MANY, 'application/json', { ...headers, 'Retry-After': '1' }); else invalid(response); return; }
+  send(response, 200, { ok: true, message: wireLine(res.message) });
+}
+function chatPoll(ctx, request, response, { token, body }) {
+  if (Object.keys(body).length !== 1 || !('since' in body) || !Number.isSafeInteger(body.since) || body.since < 0) { invalid(response); return; }
+  const a = admittedNow(ctx, response, token); if (!a) return;
+  const messages = (body.since === 0 ? ctx.chat.joinHistory(a.sessionId) : ctx.chat.since(body.since - 1, a.sessionId)).map(wireLine);
+  send(response, 200, { ok: true, messages, latestId: ctx.chat.latestId() + 1 });
+}
+
 // For status and preview, we just return the current phase.
 function phaseOnly(ctx, request, response, { body, statusRes }) {
   if (Object.keys(body).length > 0) { invalid(response); return; }
@@ -61,6 +84,8 @@ const sessionRoutes = {
   '/api/call/config': callConfig,
   '/api/call/send': callSend,
   '/api/call/poll': callPoll,
+  '/api/chat/send': chatSend,
+  '/api/chat/poll': chatPoll,
 };
 
 function redeem(ctx, response, token, body) {
@@ -124,7 +149,7 @@ async function handleApi(ctx, request, response, current) {
   let body;
   // A64KiB SDP can expand sixfold in JSON escapes; keep the wire body bounded
   // separately from the decoded SDP/candidate limits in the broker.
-  if (request.url.startsWith('/api/call/') || request.url.startsWith('/api/source/')) {
+  if (request.url.startsWith('/api/call/') || request.url.startsWith('/api/chat/') || request.url.startsWith('/api/source/')) {
     if (!gateAdmitted(ctx, request, response, token)) return;
   }
   if (request.url !== '/api/source/chunk') {

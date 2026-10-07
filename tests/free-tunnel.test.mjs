@@ -65,3 +65,26 @@ test('the shipped localhost.run host keys are present, so the default tunnel nev
  const lines=(await readFile(new URL('../assets/localhost-run-known-hosts.txt',import.meta.url),'utf8')).split('\n').filter(Boolean);
  assert.deepEqual(lines.map(l=>l.split(' ').slice(0,2).join(' ')).sort(),['localhost.run ssh-ed25519','localhost.run ssh-rsa']);
 });
+test('injected executable is what spawn receives, with the other arguments unchanged',async t=>{
+ const f=await fixture(t,{executable:'/Applications/BlastCast.app/Contents/Helpers/ssh',platform:'darwin'});const pending=f.tunnel.start(43821,{privacyAcknowledged:true});await until(()=>f.child);
+ const [exe,args,opts]=f.calls[0];assert.equal(exe,'/Applications/BlastCast.app/Contents/Helpers/ssh');assert.equal(opts.shell,false);assert.ok(args.includes('nokey@localhost.run'));assert.ok(args.includes('80:127.0.0.1:43821'));
+ f.child.output(line('abc.lhr.life'));assert.equal((await pending).ok,true);
+});
+test('a relative or non-string injected executable throws at creation',()=>{
+ const directory=path.join(tmpdir(),'blastcast-tunnel-x');
+ for(const executable of ['ssh','./Helpers/ssh','Helpers/ssh','',42,null])assert.throws(()=>createFreeTunnel({directory,platform:'darwin',executable}),/absolute path/);
+});
+test('ENOENT with an injected executable names the missing helper; the default keeps the OpenSSH message',async t=>{
+ const f=await fixture(t,{executable:'/Applications/BlastCast.app/Contents/Helpers/ssh'});const pending=f.tunnel.start(43821,{privacyAcknowledged:true});await until(()=>f.child);
+ f.child.pid=undefined;f.child.emit('error',Object.assign(new Error('private detail'),{code:'ENOENT'}));
+ assert.equal((await pending).message,"BlastCast's guest tunnel helper is missing; reinstall BlastCast.");
+ const d=await fixture(t);const p2=d.tunnel.start(43821,{privacyAcknowledged:true});await until(()=>d.child);
+ d.child.pid=undefined;d.child.emit('error',Object.assign(new Error('x'),{code:'ENOENT'}));assert.match((await p2).message,/OpenSSH is not installed/);
+});
+test('contract drift: the default executable is unchanged on darwin, linux and win32',async t=>{
+ const oldDefault=platform=>platform==='win32'?path.win32.join(process.env.SystemRoot||'C:\\Windows','System32','OpenSSH','ssh.exe'):'/usr/bin/ssh';
+ for(const platform of ['darwin','linux','win32']){
+  const f=await fixture(t,{platform});const pending=f.tunnel.start(43821,{privacyAcknowledged:true});await until(()=>f.child);
+  assert.equal(f.calls[0][0],oldDefault(platform),platform);f.child.output(line('abc.lhr.life'));await pending;await f.tunnel.stop();
+ }
+});

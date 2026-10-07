@@ -15,6 +15,14 @@ test('guest page offers only offline off, blur and image modes', async () => {
   const html = await readFile(new URL('../dist/guest.html', import.meta.url), 'utf8');
   assert.match(html, /id="guest-background"/);
   assert.match(html, /<option value="off">Off<\/option><option value="blur">Blur<\/option><option value="image">Image<\/option>/);
-  assert.match(html, /\/bodypix\/tf\.min\.js/); assert.match(html, /\/bodypix\/body-pix\.min\.js/);
+  assert.doesNotMatch(html, /bodypix|tf\.min|body-pix/i);
+  assert.doesNotMatch(html, /<script[^>]+src="https?:/);
   assert.doesNotMatch(html, /storage\.googleapis|cdn\.jsdelivr|unpkg/);
+});
+
+test('camera background engine is MediaPipe served from /mediapipe/ with no outside URL', async () => {
+  const src = await readFile(new URL('../src/camera-background.ts', import.meta.url), 'utf8');
+  for (const path of ['/mediapipe/vision_bundle.mjs', '/mediapipe/wasm', '/mediapipe/selfie_segmenter.tflite']) assert.ok(src.includes(path), path);
+  assert.doesNotMatch(src, /https?:\/\//);
+  assert.doesNotMatch(src, /window\.(tf|bodyPix)\b/);
 });

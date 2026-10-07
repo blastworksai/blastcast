@@ -1,3 +1,4 @@
+import { createChatUi, type ChatUi } from './chat-ui.js';
 /** CodexBWAI — presentation-only shell for the supplied studio redesign.
  * Status remains owned by the capture, admission and recording controllers. */
 export interface StudioShell {
@@ -5,6 +6,7 @@ export interface StudioShell {
   confirmStop(): Promise<boolean>;
 }
 export function initStudioShell(): StudioShell {
+  // ClaudeBWAI — einh 4-5 Oct: live chat starts here (not from studio.ts). Host sharing = the Share screen button reads "Stop sharing".
   const el = <T extends HTMLElement = HTMLElement>(id: string): T => {
     const value = document.getElementById(id);
     if (!value) throw new Error(`Missing studio shell element: ${id}`);
@@ -24,24 +26,39 @@ export function initStudioShell(): StudioShell {
   guestDialog.addEventListener('close', closeGuests);
   invite.addEventListener('click', () => { if (!guestDialog.open) guestDialog.showModal(); }, { capture: true });
   el('close-guest-connection').addEventListener('click', () => guestDialog.close());
-  const tabs = [el<HTMLButtonElement>('guests-tab'), el<HTMLButtonElement>('recordings-tab')];
-  const panes = [el('guests-pane'), el('recordings-pane')];
+  const tabs = [el<HTMLButtonElement>('guests-tab'), el<HTMLButtonElement>('recordings-tab'), el<HTMLButtonElement>('chat-tab')];
+  const panes = [el('guests-pane'), el('recordings-pane'), el('chat-pane')];
+  const chatIndex = 2;
   const selectTab = (index: number): void => {
     tabs.forEach((tab, i) => {
       tab.setAttribute('aria-selected', String(i === index));
       tab.tabIndex = i === index ? 0 : -1;
       panes[i]!.hidden = i !== index;
     });
+    chat?.setOpen(index === chatIndex);
   };
+  let chat: ChatUi | null = null;
   tabs.forEach((tab, i) => {
     tab.addEventListener('click', () => selectTab(i));
     tab.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : 1 - i;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
       selectTab(next); tabs[next]!.focus();
     });
   });
+  const bridge = (): Window['blastcast'] | undefined => (window as Window & { blastcast?: Window['blastcast'] }).blastcast;
+  // Guest access state is not exposed to the shell cheaply: poll always (an IPC read of an in-memory ring; empty when no guests are connected).
+  chat = createChatUi({
+    root: el('chat-root'), role: 'host',
+    send: async value => { try { return await bridge()!.chatSend(value); } catch { return { ok: false, reason: 'invalid' } as const; } },
+    poll: async since => { try { return await bridge()!.chatSince(since); } catch { return { ok: false } as const; } },
+    isSharing: () => el('share-screen').textContent === 'Stop sharing',
+    onAttention: count => { void bridge()?.chatAttention(count).catch(() => {}); },
+    onUnread: count => { el('chat-count').textContent = String(count); },
+    openChat: () => { selectTab(chatIndex); tabs[chatIndex]!.focus(); el('chat-root').querySelector<HTMLInputElement>('input')?.focus(); }
+  });
+  chat.start();
   const text = (id: string, value: string): void => {
     if (el(id).textContent !== value) el(id).textContent = value;
   };
@@ -74,6 +91,7 @@ export function initStudioShell(): StudioShell {
     const recording = recordingPhase === 'recording';
     hidden('recording-live', !recording);
     text('shell-status', recording ? 'Recording' : recordingPhase === 'finalizing' ? 'Finalizing…' : el('preview-badge').textContent || 'Devices off');
+    chat?.refresh();
     const count = el('call-guests').querySelectorAll('.call-row').length;
     text('guest-count', String(count));
     hidden('guest-empty', count > 0 || el('guest-pending').querySelectorAll('.bcast-admission-item').length > 0);
@@ -88,7 +106,7 @@ export function initStudioShell(): StudioShell {
   const observer = new MutationObserver(sync);
   observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true,
     attributeFilter: ['class', 'hidden', 'open', 'data-count'] });
-  window.addEventListener('pagehide', () => { observer.disconnect(); window.clearInterval(clock); finishStop(false); }, { once: true });
+  window.addEventListener('pagehide', () => { chat?.stop(); observer.disconnect(); window.clearInterval(clock); finishStop(false); }, { once: true });
   sync();
   return {
     updateRecording(phase: string): void {

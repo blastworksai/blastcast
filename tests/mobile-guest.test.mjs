@@ -84,10 +84,14 @@ test('a phone guest asks for H.264 first on its camera video (not the screen slo
   assert.deepEqual([caps.maxBitrate, caps.maxFramerate, caps.scaleResolutionDownBy], [1_500_000, 24, 1.5]);
 });
 
-test('a desktop guest is unchanged: no codec preference, the 1080p guest cap', async () => {
+// ClaudeBWAI — einh 4 Oct (0.2.4 CP4b): desktop guests now ask for H.264 first too (hardware encode/decode measured on Odin and Thor); the cap is unchanged.
+test('a desktop guest asks for H.264 first on its camera video, keeps VP8, and keeps the 1080p guest cap', async () => {
   const pc = await answerOne(false);
-  assert.ok(pc.transceivers.every(t => t.preferences === null));
-  const caps = pc.transceivers.find(t => t.sender.track?.kind === 'video').sender.params.at(-1).encodings[0];
+  const cameraVideo = pc.transceivers.find(t => t.sender.track?.kind === 'video');
+  assert.equal(cameraVideo.preferences?.[0]?.mimeType, 'video/H264');
+  assert.ok(cameraVideo.preferences.some(c => c.mimeType === 'video/VP8'), 'VP8 stays as fallback');
+  assert.ok(pc.transceivers.filter(t => t !== cameraVideo).every(t => t.preferences === null), 'audio and screen transceivers untouched');
+  const caps = cameraVideo.sender.params.at(-1).encodings[0];
   assert.deepEqual([caps.maxBitrate, caps.maxFramerate], [4_000_000, 30]);
 });
 

@@ -23,19 +23,26 @@ const list = (max, item) => v => Array.isArray(v) && v.length <= max && v.every(
 // Keep these lists equal to the renderer's in src/session-diagnostics.ts.
 const CODECS = ['video/VP8', 'video/VP9', 'video/AV1', 'video/H264', 'video/H265', 'audio/opus', 'other'];
 const ENCODERS = ['libvpx', 'libaom', 'OpenH264', 'ExternalEncoder', 'MediaFoundationVideoEncoder', 'VideoToolbox', 'SimulcastEncoderAdapter', 'other'];
+const DECODERS = ['D3D11VideoDecoder', 'MediaFoundation', 'VideoToolbox', 'VDAVideoDecoder', 'FFmpeg', 'libvpx', 'libaom', 'ExternalDecoder', 'other'];
 const LIMITATIONS = ['none', 'cpu', 'bandwidth', 'other'];
 const codec = oneOf(...CODECS);
 const recorder = shape({ codec: oneOf('vp8', 'vp9', 'av1', 'h264'), mimeType: oneOf('video/webm', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=av1,opus', 'video/webm;codecs=h264,opus') });
-const inbound = shape({ codec, width: int(16384), height: int(16384), fps: num(1000), framesDropped: int(1e9), framesDecoded: int(1e9), jitter: num(1e4), packetsLost: int(1e9) });
+const inbound = shape({ codec, width: int(16384), height: int(16384), fps: num(1000), framesDropped: int(1e9), framesDecoded: int(1e9), jitter: num(1e4), packetsLost: int(1e9),
+  decoderImplementation: oneOf(...DECODERS), powerEfficientDecoder: bool });
 const outbound = shape({ codec, width: int(16384), height: int(16384), fps: num(1000), encoderImplementation: oneOf(...ENCODERS),
-  powerEfficientEncoder: bool, qualityLimitationReason: oneOf(...LIMITATIONS) });
+  powerEfficientEncoder: bool, qualityLimitationReason: oneOf(...LIMITATIONS),
+  framesEncoded: int(1e9), totalEncodeTime: num(1e7), qpSum: int(1e12) });
 const guest = shape({ slot: v => Number.isSafeInteger(v) && v >= 1 && v <= 7, inbound: list(MAX_STREAMS, inbound), outbound: list(MAX_STREAMS, outbound) });
-const scene = shape({ framesDrawn: int(1e6), drawnFps: num(1000), avgDrawMs: num(6e4), maxDrawMs: num(6e4) });
+// ClaudeBWAI — einh 4 Oct (CP4a): scene.backend and compositor events; enumerated. Keep equal to src/session-diagnostics.ts.
+const BACKENDS = ['webgl2', 'canvas2d'];
+const COMPOSITOR_REASONS = ['webgl2-unavailable', 'context-lost', 'context-restored', 'fallback-canvas2d', 'recording-failed'];
+const scene = shape({ framesDrawn: int(1e6), drawnFps: num(1000), avgDrawMs: num(6e4), maxDrawMs: num(6e4), backend: v => v !== null && oneOf(...BACKENDS)(v) });
 // ClaudeBWAI — einh 4 Oct (r10): call transitions by slot. Enumerated, like everything else; keep equal to src/session-diagnostics.ts.
 const CALL_STATES = ['reconnecting', 'connected', 'failed', 'released'];
 const CALL_REASONS = ['media-lost', 'recovered', 'established', 'recovery-failed', 'setup-failed', 'page-gone', 'call-gone', 'stream-changed', 'reconnect-button'];
 const notNull = ok => v => v !== null && ok(v);
 const PAYLOADS = {
+  compositor: shape({ kind: v => v === 'compositor', backend: notNull(oneOf(...BACKENDS)), reason: notNull(oneOf(...COMPOSITOR_REASONS)) }),
   call: shape({ kind: v => v === 'call', slot: v => Number.isSafeInteger(v) && v >= 1 && v <= 7, state: notNull(oneOf(...CALL_STATES)), reason: notNull(oneOf(...CALL_REASONS)) }),
   start: shape({ kind: v => v === 'start', quality: v => v === 1080 || v === 2160, participants: int(MAX_GUESTS), recorder }),
   sample: shape({ kind: v => v === 'sample', windowMs: int(36e5), participants: int(MAX_GUESTS), scene, recorder, guests: list(MAX_GUESTS - 1, guest) }),
@@ -73,6 +80,8 @@ function createSessionDiagnostics({ current, io = fs, info = async () => ({}), m
     // getAppMetrics reports CPU since its previous call, so the start line takes the baseline the first sample is measured from.
     if (kind === 'start') { try { metrics(); } catch { /* the first sample's CPU reads 0 */ } return { type: 'start', t, ...(await info()), ...rest }; }
     if (kind === 'call') return { type: 'call', t, ...rest };
+    // ClaudeBWAI — compositor events get their own row type so a reader can tell backend changes from call events (plan CP4a).
+    if (kind === 'compositor') return { type: 'compositor', t, ...rest };
     if (kind === 'sample') return { type: 'sample', t, ...rest, process: processMetrics(metrics()) };
     return { type: 'end', t, ...rest };
   }
@@ -97,4 +106,4 @@ function createSessionDiagnostics({ current, io = fs, info = async () => ({}), m
     },
   };
 }
-module.exports = { CALL_STATES, CALL_REASONS, CODECS, ENCODERS, LIMITATIONS, createSessionDiagnostics, validDiagnostics, diagnosticsPath, processMetrics, MAX_LOG_BYTES, MAX_PAYLOAD_CHARS };
+module.exports = { DECODERS, BACKENDS, COMPOSITOR_REASONS, CALL_STATES, CALL_REASONS, CODECS, ENCODERS, LIMITATIONS, createSessionDiagnostics, validDiagnostics, diagnosticsPath, processMetrics, MAX_LOG_BYTES, MAX_PAYLOAD_CHARS };
