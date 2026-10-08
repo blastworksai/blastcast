@@ -25,6 +25,20 @@ export function exceedsCeiling(settings: { width?: number; height?: number }, ce
   return Math.max(w, h) > ceiling.width || Math.min(w, h) > ceiling.height;
 }
 
+// ClaudeBWAI — einh 8 Oct, "Retry once at 1080": Safari on macOS refuses a 1080p camera (FaceTime HD) when max is set and ideal (4K) is out of its range; ideal 1080 with the same max is accepted.
+export function relaxedVideo(c: MediaStreamConstraints): MediaStreamConstraints | null {
+  const video = c.video;
+  if (!video || typeof video !== 'object') return null;
+  const range = (value: unknown, ideal: number): ConstrainULongRange => {
+    const max = value && typeof value === 'object' ? (value as ConstrainULongRange).max : undefined;
+    return max === undefined ? { ideal } : { ideal, max };
+  };
+  const width = range(video.width, 1920), height = range(video.height, 1080);
+  // Nothing to relax when the request already asked for ideal 1080 (the host's 1080 setting): a retry would repeat it.
+  if (JSON.stringify(width) === JSON.stringify(video.width) && JSON.stringify(height) === JSON.stringify(video.height)) return null;
+  return { ...c, video: { ...video, width, height } };
+}
+
 export function constraints(selection: Selection): MediaStreamConstraints {
   if (selection.height !== 1080 && selection.height !== 2160 && selection.height !== 'auto') throw new Error('Unsupported resolution');
   const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
@@ -201,7 +215,7 @@ export class Preview {
         if (!await authorize()) throw new DOMException('Access was not granted.', 'NotAllowedError');
         if (stale()) return { retired: [] };
         const requested = constraints({ ...selection, cameraEnabled: kind === 'camera', microphoneEnabled: kind === 'microphone' });
-        acquired = await this.acquire({ video: kind === 'camera' ? requested.video : false, audio: kind === 'microphone' ? requested.audio : false });
+        acquired = await this.acquireWithRetry({ video: kind === 'camera' ? requested.video : false, audio: kind === 'microphone' ? requested.audio : false }, stale);
         if (stale()) { acquired.getTracks().forEach(track => track.stop()); return { retired: [] }; }
         for (const track of acquired.getTracks()) if (track.kind !== trackKind) track.stop();
         fresh = acquired.getTracks().find(track => track.kind === trackKind) ?? null;
@@ -247,6 +261,16 @@ export class Preview {
     return Object.values(this.errors).join(' ') || 'Sources are active. Nothing is being recorded.';
   }
 
+  private async acquireWithRetry(c: MediaStreamConstraints, stale: () => boolean): Promise<MediaStream> {
+    try { return await this.acquire(c); } catch (error) {
+      const e = error as { name?: string; constraint?: string };
+      const retry = e?.name === 'OverconstrainedError' && (e.constraint === 'width' || e.constraint === 'height') ? relaxedVideo(c) : null;
+      // A preview stopped or superseded while the first ask was pending must not open the camera again.
+      if (!retry || stale()) throw error;
+      return this.acquire(retry);
+    }
+  }
+
   // Explicit host toggles isolate failures: an unavailable camera cannot silence a mic.
   private async acquireIndependent(selection: Selection, generation: number): Promise<MediaStream | null> {
     const requested = constraints(selection);
@@ -255,7 +279,7 @@ export class Preview {
       if (!requested[kind]) return null;
       let stream: MediaStream | null = null;
       try {
-        stream = await this.acquire({ video: kind === 'video' ? requested.video : false, audio: kind === 'audio' ? requested.audio : false });
+        stream = await this.acquireWithRetry({ video: kind === 'video' ? requested.video : false, audio: kind === 'audio' ? requested.audio : false }, () => generation !== this.generation);
         if (generation !== this.generation) {
           stream.getTracks().forEach(track => track.stop());
           return null;
@@ -311,7 +335,7 @@ export class Preview {
       }
       const stream = independent
         ? await this.acquireIndependent(selection, generation)
-        : await this.acquire(constraints(selection));
+        : await this.acquireWithRetry(constraints(selection), () => generation !== this.generation);
       if (!stream) {
         if (generation === this.generation) this.publish('error', Object.values(this.errors).join(' '));
         return;

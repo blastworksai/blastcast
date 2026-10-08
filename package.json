@@ -1,6 +1,6 @@
 {
   "name": "blastcast",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "LicenseRef-BlastCast-Source-Available-1.0",
   "description": "A host-owned podcast studio",

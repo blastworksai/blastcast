@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Preview, constraints, mediaError } from '../dist/preview.js';
+import { Preview, constraints, mediaError, relaxedVideo } from '../dist/preview.js';
 
 class Track extends EventTarget {
   constructor(kind, settings = {}) { super(); this.kind = kind; this.settings = settings; this.readyState = 'live'; this.muted = false; this.stopped = 0; }
@@ -187,4 +187,61 @@ test('host-only camera ceiling is orientation-neutral: portrait 2160x3840 passes
     await preview.start(ultra, allow); phases.push(preview.state.phase); preview.stop();
   }
   assert.equal(phases[0], 'live'); assert.equal(phases[1], 'error');
+});
+
+// ClaudeBWAI — einh 8 Oct, "Retry once at 1080": a refused width/height retries once with ideal 1920x1080 and the same max.
+const overconstrained = constraint => Object.assign(new Error('private driver detail'), { name: 'OverconstrainedError', constraint });
+for (const constraint of ['width', 'height']) {
+  test(`OverconstrainedError on ${constraint} retries once at ideal 1080 with the same ceiling`, async () => {
+    const seen = []; const acquired = stream({ width: 1920, height: 1080 });
+    const preview = new Preview(async c => { seen.push(c); if (seen.length === 1) throw overconstrained(constraint); return acquired; }, () => {});
+    await preview.start({ camera: 'cam', microphone: 'mic', height: 'auto' }, allow);
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen[0].video.width, { ideal: 3840, max: 3840 });
+    assert.deepEqual(seen[1].video.width, { ideal: 1920, max: 3840 });
+    assert.deepEqual(seen[1].video.height, { ideal: 1080, max: 2160 });
+    assert.deepEqual(seen[1].video.deviceId, seen[0].video.deviceId);
+    assert.deepEqual(seen[1].video.frameRate, seen[0].video.frameRate);
+    assert.deepEqual(seen[1].audio, seen[0].audio);
+    assert.equal(preview.state.phase, 'live'); preview.stop();
+  });
+}
+for (const [name, error] of [['OverconstrainedError on deviceId', overconstrained('deviceId')], ['NotAllowedError', Object.assign(new Error('x'), { name: 'NotAllowedError' })]]) {
+  test(`${name} is not retried`, async () => {
+    let calls = 0;
+    const preview = new Preview(async () => { calls++; throw error; }, () => {});
+    await preview.start({ ...selection, height: 'auto' }, allow);
+    assert.equal(calls, 1); assert.equal(preview.state.phase, 'error');
+    assert.equal(preview.state.message, mediaError(error));
+  });
+}
+test('a second refusal stops after two calls with the existing message', async () => {
+  let calls = 0; const error = overconstrained('width');
+  const preview = new Preview(async () => { calls++; throw error; }, () => {});
+  await preview.start({ ...selection, height: 'auto' }, allow);
+  assert.equal(calls, 2); assert.equal(preview.state.phase, 'error'); assert.equal(preview.state.message, mediaError(error));
+});
+test('an audio-only request refused on width is not retried', async () => {
+  let calls = 0;
+  const preview = new Preview(async () => { calls++; throw overconstrained('width'); }, () => {});
+  await preview.start({ ...selection, height: 'auto', cameraEnabled: false, microphoneEnabled: true }, allow);
+  assert.equal(calls, 1); assert.equal(preview.state.phase, 'error');
+});
+test('the host 1080 setting is not retried: the relaxed ask would repeat the same request', async () => {
+  let calls = 0; const error = overconstrained('width');
+  const preview = new Preview(async () => { calls++; throw error; }, () => {});
+  await preview.start({ camera: 'cam', microphone: 'mic', height: 1080 }, allow);
+  assert.equal(calls, 1); assert.equal(preview.state.phase, 'error');
+});
+test('a preview stopped while the first ask is pending does not ask again', async () => {
+  let calls = 0, refuse;
+  const preview = new Preview(c => { calls++; return calls === 1 ? new Promise((_, reject) => { refuse = () => reject(overconstrained('width')); }) : Promise.resolve(stream({ width: 1920, height: 1080 })); }, () => {});
+  const started = preview.start({ camera: 'cam', microphone: 'mic', height: 'auto' }, allow);
+  while (!refuse) await new Promise(r => setTimeout(r, 1));
+  preview.stop(); refuse(); await started;
+  assert.equal(calls, 1);
+});
+test('relaxedVideo leaves out max when the original had none', () => {
+  const relaxed = relaxedVideo({ video: { width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
+  assert.deepEqual(relaxed.video.width, { ideal: 1920 }); assert.equal('max' in relaxed.video.height, false);
 });
