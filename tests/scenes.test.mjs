@@ -199,3 +199,15 @@ for (const id of ['screensharevert-8', 'screensharehorizont-8']) {
     assert.ok(one.w > eight.w && one.h > eight.h);
   });
 }
+
+// CodexBWAI — free frames share the actual 2D/GL layout, including partial edge crops and stacking.
+test('free arrangement clips at the canvas with a 48px corner, orders cameras above artwork and keeps defaults immutable', async () => {
+  const { layoutFrame } = await import('../dist/scenes.js');
+  const scene=sceneById('2cam');
+  const sources=[0,1].map(index=>({kind:'camera',index,state:'live',drawable:fakeDrawable(1280,720),naturalWidth:1280,naturalHeight:720}));
+  const layout=layoutFrame(scene,sources,3840,2160,{arrangement:[{index:1,x:3000,y:-4000},{index:0,x:100,y:200}]});
+  const videos=layout.ops.filter(op=>op.op==='video');
+  assert.deepEqual(videos.map(op=>[op.slot.index,op.slot.rect.x,op.slot.rect.y]),[[1,1872,-429],[0,100,200]]);
+  assert.ok(layout.ops.findIndex(op=>op.op==='backdrop')<layout.ops.findIndex(op=>op.op==='video')&&!layout.ops.some(op=>op.op==='overlay'));
+  assert.deepEqual(scene.slots.map(slot=>[slot.rect.x,slot.rect.y]),[[80,316],[992,316]]);
+});

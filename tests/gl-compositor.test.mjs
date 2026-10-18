@@ -19,6 +19,7 @@ const nat = { naturalWidth: 1280, naturalHeight: 720 };
 const live = (kind, index, extra = {}) => ({ kind, index, state: 'live', drawable: { id: `${kind}${index}` }, ...nat, ...extra });
 const overlay = { img: 'overlay' };
 const scenes = {
+  free: ['2cam', [live('camera',0),live('camera',1)], {arrangement:[{index:1,x:1000,y:100},{index:0,x:-800,y:-429}]}],
   solo: ['1cam', [live('camera', 0)], {}],
   grid8: ['8cam', Array.from({ length: 8 }, (_, i) => live('camera', i)), {}],
   shareGuests: ['screensharehorizont-8', [live('screenshare', 0), live('camera', 0), live('camera', 1), live('camera', 2)], {}],

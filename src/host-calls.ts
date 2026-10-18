@@ -74,7 +74,7 @@ export class HostCalls {
     if (track) stream.addTrack(track);
     try { this.mixer?.setHostStream(device); }
     catch { this.message.textContent = 'Call audio could not start. Restart preview before calling or recording.'; }
-    await Promise.all([...this.calls.values()].map(call => call.peer?.replaceAudioTrack(track)));
+    // CodexBWAI — return tracks stay stable; the mixer swaps their host input above.
   }
 
   /** ClaudeBWAI — the scene (program) video track was replaced (output quality change): every call's video sender and the
@@ -153,6 +153,7 @@ export class HostCalls {
     call.peer?.close(); call.peer = null;
     setGuestReconnecting(call.id, false); setGuestMediaLost(call.id, false);
     this.mixer?.removeGuest(call.id);
+    this.mixer?.releaseReturn(call.id);
     call.video.pause(); call.video.srcObject = null;
     call.screenVideo.pause(); call.screenVideo.srcObject = null;
     call.row.remove();
@@ -194,7 +195,7 @@ export class HostCalls {
     });
     const mute = document.createElement('button'); mute.className = 'secondary';
     const updateMute = () => { mute.textContent = this.muted.has(id) ? 'Unmute mix' : 'Mute mix'; mute.setAttribute('aria-pressed', String(this.muted.has(id))); };
-    updateMute(); mute.title = 'Affects your listening and mixed recording, not the guest original';
+    updateMute(); mute.title = 'Affects call audio and mixed recording, not the guest original';
     mute.addEventListener('click', () => { if (this.muted.has(id)) this.muted.delete(id); else this.muted.add(id); this.mixer?.setGuestMuted(id, this.muted.has(id)); updateMute(); });
     const hide = document.createElement('button'); hide.className = 'secondary';
     const updateHide = () => { hide.textContent = this.hiddenCameras.has(id) ? 'Show camera' : 'Hide camera'; hide.setAttribute('aria-pressed', String(this.hiddenCameras.has(id))); };
@@ -222,7 +223,8 @@ export class HostCalls {
       // H.264 first (hardware-encoded on phones; VP8 is software there and stuttered). Desktop guests keep the default order.
       // ClaudeBWAI — einh 4 Oct (CP4b): desktop guests are offered H.264 first too (hardware on Windows/macOS, measured); a Firefox guest
       // answers in its native order (see peer-call.ts isFirefoxUserAgent). The cap stays 640x360: the hardware encoders accept it.
-      call.peer = new PeerCall({ role: 'host', stream, screenShare:true, videoCap: HOST_CALL_VIDEO_CAP, preferH264: true,
+      const returnStream = new MediaStream([...stream.getVideoTracks(), ...this.mixer!.getReturnStream(id).getAudioTracks()]);
+      call.peer = new PeerCall({ role: 'host', stream: returnStream, screenShare:true, videoCap: HOST_CALL_VIDEO_CAP, preferH264: true,
         onRemoteScreen: screen => { if (!current()) return; screenVideo.srcObject=screen; if(screen) void screenVideo.play().catch(()=>{label.textContent='Guest screen could not play. Ask them to share again.';}); else screenVideo.pause(); }, iceServers: config.iceServers, iceTransportPolicy: config.iceTransportPolicy,
         send: async signal => {
           if (!current()) throw new Error('Call replaced.');
@@ -259,13 +261,14 @@ export class HostCalls {
           if (state === 'failed' || state === 'closed') setGuestMediaLost(id, true); else if (state === 'connected') setGuestMediaLost(id, false);
           label.classList.toggle('reconnecting', state === 'reconnecting');
           label.textContent = state === 'reconnecting' ? 'Reconnecting… keeping the last picture while the connection recovers.' : state === 'connected' ? 'Connected · live camera and microphone' : `${text}${state === 'failed' && config.iceServers.length ? ' Check connectivity, relay availability, allocation credentials and free allowance. The exact cause is unknown; no paid fallback was used.' : ''}${state === 'failed' || state === 'closed' ? ' Ask the guest to start preview, then Reconnect.' : ''}`;
-          if (state === 'closed' || state === 'failed') { this.mixer?.removeGuest(id); video.srcObject = null; }
+          if (state === 'closed' || state === 'failed') { this.mixer?.removeGuest(id); this.mixer?.releaseReturn(id); video.srcObject = null; }
         },
       });
       await call.peer.setScreen(this.localScreen);
       void call.peer.start().catch(() => { if (current()) { call.peer?.close(); label.textContent = 'Call setup failed. Reconnect to retry.'; } });
     } catch {
       if (this.calls.get(id) !== call || generation !== this.generation) return;
+      this.mixer?.releaseReturn(id);
       call.state = 'failed'; setGuestMediaLost(id, true); label.textContent = 'Call configuration or media setup failed. Check your relay account, credentials and allowance, then Reconnect. No paid fallback was used.';
     }
   }

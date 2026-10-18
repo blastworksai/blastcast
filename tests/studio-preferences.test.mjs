@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 const { createStudioPreferences, MAX_PNG_BYTES } = createRequire(import.meta.url)('../desktop/studio-preferences.cjs');
+const { prepareArrangementProfile } = createRequire(import.meta.url)('./helpers/arrangement-profile.cjs');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'blastcast-preferences-'));
@@ -89,4 +90,39 @@ test('saving and resetting overrides cannot change supplied default assets', asy
   const before = await fs.readFile(original);
   await store.saveBackdrop('1cam', PNG); await store.resetBackdrop('1cam');
   assert.deepEqual(await fs.readFile(original), before);
+});
+
+// CodexBWAI — persist only geometry/order per scene; no identity or media is stored.
+test('camera arrangements survive a fresh store and reset only the chosen scene', async t => {
+  const {store,directory}=await fixture(t);
+  const a=[{index:1,x:-20,y:100},{index:0,x:400,y:150}],b=[{index:0,x:200,y:80}];
+  await store.saveArrangement('2cam',a);await store.saveArrangement('1cam',b);
+  const restarted=createStudioPreferences({directory});
+  assert.deepEqual(await restarted.loadArrangements(),{ok:true,arrangements:{'2cam':a,'1cam':b}});
+  await restarted.resetArrangement('2cam');
+  assert.deepEqual(await createStudioPreferences({directory}).loadArrangements(),{ok:true,arrangements:{'1cam':b}});
+  assert.deepEqual(await fs.readdir(path.join(directory,'studio-preferences')),['arrangements.json']);
+});
+test('invalid arrangement payloads cannot replace valid saved geometry', async t => {
+  const {store}=await fixture(t);const good=[{index:0,x:50,y:60}];await store.saveArrangement('1cam',good);
+  const results=await Promise.all([store.saveArrangement('../outside',good),store.saveArrangement('1cam',[{index:0,x:NaN,y:0}]),store.saveArrangement('1cam',[...good,...good]),store.saveArrangement('1cam',[{...good[0],name:'private'}])]);
+  assert.ok(results.every(result=>result.ok===false));
+  assert.deepEqual(await store.loadArrangements(),{ok:true,arrangements:{'1cam':good}});
+});
+
+test('arrangement proofs reset warm 4K devices without changing restart geometry', async t => {
+  const { directory, store, root } = await fixture(t);
+  await store.saveArrangement('1cam', [{ index: 0, x: 200, y: 80 }]);
+  const geometry = await fs.readFile(path.join(root, 'arrangements.json'), 'utf8');
+  const warm = { camera: 'previous-camera', microphone: 'previous-microphone', height: 2160, background: 'blur' };
+  await store.saveDevices(warm);
+  assert.deepEqual((await store.loadDevices()).preferences, warm, 'reproduce the restore proof leaving a warm 4K profile');
+  for (const proof of ['recording', 'restore']) {
+    await store.saveDevices(warm);
+    const prepared = prepareArrangementProfile({ directory });
+    assert.deepEqual({ prepared, devices: (await createStudioPreferences({ directory }).loadDevices()).preferences,
+      geometry: await fs.readFile(path.join(root, 'arrangements.json'), 'utf8') },
+    { prepared: { camera: '', microphone: '', height: 1080 }, devices: { camera: '', microphone: '', height: 1080 }, geometry },
+    `${proof} synchronously owns 1080p devices before main bootstrap while preserving saved scene bytes`);
+  }
 });

@@ -41,3 +41,23 @@ test('live preview and blocked recording do not acquire or stop any tracks; fail
   const f=fixture({refresh:async()=>false}); await f.access.prepare(); await f.access.prepare();
   assert.equal(f.calls.length,4); assert.ok(f.tracks.every(t=>t.readyState==='ended'));
 });
+
+// CodexBWAI — guest opt-in starts the real preview instead of disposable discovery.
+test('guest activation is one flight, with no temporary device acquisition', async () => {
+  const gate = deferred(); let activations = 0;
+  const f = fixture({ activatePreview: () => { activations++; return gate.promise; } });
+  const first = f.access.prepare(), second = f.access.prepare(); await Promise.resolve();
+  assert.ok(first === second && activations === 1 && f.access.busy);
+  gate.resolve(); await first;
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.busy, [true, false]);
+});
+test('cancel before guest activation never opens devices; blocked activation stays blocked', async () => {
+  let activations = 0;
+  const f = fixture({ activatePreview: async () => { activations++; } });
+  const pending = f.access.prepare(); f.access.cancel(); await pending;
+  assert.equal(activations, 0);
+  const blocked = fixture({ canRequest: () => false, activatePreview: async () => { activations++; } });
+  await blocked.access.prepare();
+  assert.equal(activations, 0);
+});

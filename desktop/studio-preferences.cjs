@@ -38,6 +38,19 @@ function sceneName(sceneId) {
   return `${sceneId}.png`;
 }
 
+// CodexBWAI — closed geometry-only IPC/disk schema; at most eight frames per known scene.
+function arrangement(value) {
+  if (!Array.isArray(value) || value.length > 8) throw new Error('Invalid camera arrangement.');
+  const used = new Set();
+  return value.map(frame => {
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame) || Object.keys(frame).length !== 3
+      || !Object.keys(frame).every(key => ['index','x','y'].includes(key))
+      || !Number.isInteger(frame.index) || frame.index < 0 || frame.index > 7 || used.has(frame.index)
+      || !Number.isFinite(frame.x) || !Number.isFinite(frame.y)
+      || frame.x < -1872 || frame.x > 1872 || frame.y < -1032 || frame.y > 1032) throw new Error('Invalid camera arrangement.');
+    used.add(frame.index); return { index: frame.index, x: frame.x, y: frame.y };
+  });
+}
 function createStudioPreferences({ directory }) {
   if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('An absolute application settings directory is required.');
   const root = path.join(directory, 'studio-preferences');
@@ -108,6 +121,20 @@ function createStudioPreferences({ directory }) {
     }
     return { ok: true, backdrops: values };
   }
+  async function arrangements() {
+    await ensureDirectory();
+    const bytes = await read(path.join(root, 'arrangements.json'), 16384);
+    if (!bytes) return {};
+    const saved = JSON.parse(bytes.toString('utf8'));
+    if (!saved || saved.version !== 1 || Object.keys(saved).length !== 2 || !saved.scenes
+      || typeof saved.scenes !== 'object' || Array.isArray(saved.scenes)
+      || Object.keys(saved.scenes).some(id => !SCENES.has(id))) throw new Error('Saved camera arrangements could not be read.');
+    return Object.fromEntries(Object.entries(saved.scenes).map(([id,frames]) => [id,arrangement(frames)]));
+  }
+  async function writeArrangements(scenes) {
+    await write(path.join(root,'arrangements.json'), Buffer.from(JSON.stringify({version:1,scenes})), 16384);
+    return {ok:true};
+  }
   async function backgroundImage() {
     await ensureDirectory();
     for (const [type, name] of Object.entries(BACKGROUND_FILES)) {
@@ -117,6 +144,16 @@ function createStudioPreferences({ directory }) {
     return null;
   }
   return {
+    loadArrangements: () => result(async () => ({ok:true,arrangements:await arrangements()})),
+    saveArrangement: (id, value) => {
+      // Snapshot at the boundary before queueing behind another settings mutation.
+      let frames;
+      try { sceneName(id); frames = arrangement(value); } catch (error) { return Promise.resolve({ok:false,message:error.message}); }
+      return mutate(async () => writeArrangements({...await arrangements(),[id]:frames}));
+    },
+    resetArrangement: id => mutate(async () => {
+      sceneName(id); const scenes = await arrangements(); delete scenes[id]; return writeArrangements(scenes);
+    }),
     loadBackgroundImage: () => result(async () => ({ ok: true, dataUrl: await backgroundImage() })),
     saveBackgroundImage: bytes => mutate(async () => {
       const type = imageType(bytes);

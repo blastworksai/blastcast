@@ -1,3 +1,4 @@
+import type { SceneId, SceneArrangement } from './scenes.js';
 import type { DiagnosticsPayload } from './session-diagnostics.js';
 import type { SourceDescriptor, SourceChunk, SourceEnd, SourceBeginAck, SourceChunkAck, SourceFinishAck, SourceStatus } from './source-protocol.js';
 export type FolderResult =
@@ -75,6 +76,9 @@ export interface DesktopBridge {
   deactivateLicense():Promise<LicenseStatus>;
   openUpdates():Promise<{ok:boolean;message?:string}>;
   openGuestProvider(provider:'cloudflare'|'expressturn'):Promise<{ok:boolean;message?:string}>;
+  loadSceneArrangements():Promise<{ok:boolean;arrangements?:Partial<Record<SceneId,SceneArrangement>>;message?:string}>;
+  saveSceneArrangement(id:SceneId,frames:SceneArrangement):Promise<{ok:boolean;message?:string}>;
+  resetSceneArrangement(id:SceneId):Promise<{ok:boolean;message?:string}>;
   getSceneBackdrops():Promise<{ok:boolean;backdrops?:Record<string,string>;message?:string}>;
   chooseSceneBackdrop(id:string):Promise<{ok:boolean;backdrops?:Record<string,string>;message?:string;cancelled?:boolean}>;
   resetSceneBackdrop(id:string):Promise<{ok:boolean;backdrops?:Record<string,string>;message?:string}>;

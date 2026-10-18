@@ -21,9 +21,12 @@ const { createGuestSettings } = require('./guest-settings.cjs');
 const { createGuestWizard } = require('./guest-wizard.cjs');
 const { createDirectAccess } = require('./direct-access.cjs');
 // ClaudeBWAI — einh 5 Oct: Mac App Store flavour. license-store.cjs/license-key.cjs are not packaged under --mas, so they load only in the non-MAS branch below.
-const { isMas, createMasLicenseStore, helperPath } = require('./mas-flavour.cjs');
+const { isMas, createMasLicenseStore, isWindowsStore, createWindowsStoreLicenseStore, helperPath } = require('./mas-flavour.cjs');
 const { installLicencesMenu } = require('./licences-window.cjs');
 const mas = isMas();
+// CodexBWAI — paid Store purchases activate the studio; direct downloads keep key activation.
+const windowsStore = isWindowsStore();
+const storeBuild = mas || windowsStore;
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: {
   standard: true, secure: true, supportFetchAPI: true,
@@ -87,6 +90,7 @@ async function authorizePreview() {
 app.whenReady().then(async () => {
   // ClaudeBWAI — einh 5 Oct: under MAS the purchase is the licence; no key file, no key code.
   if (mas) licenseStore = createMasLicenseStore();
+  else if (windowsStore) licenseStore = createWindowsStoreLicenseStore();
   else {
     const { createLicenseStore } = require('./license-store.cjs');
     const publicKey = await fs.readFile(path.join(__dirname, '../assets/licensing/public-key.txt'), 'utf8');
@@ -122,8 +126,8 @@ app.whenReady().then(async () => {
     screenBlocked: () => screenBlockedMessage({ platform: process.platform, getStatus: kind => systemPreferences.getMediaAccessStatus(kind) })});
   // ClaudeBWAI — Share screen opens the picker through this call first; getDisplayMedia only collects the armed pick.
   registerBridge(ipcMain, () => window?.webContents, { chooseScreen: createChooseScreen({ permission: displayPermission, picker: displayPicker, getContents: () => window?.webContents }) }, activated);
-  // ClaudeBWAI — einh 5 Oct: the releases link is required only outside the Mac App Store build.
-  const releases = mas ? null : require('./releases-link.cjs');
+  // CodexBWAI — store builds receive updates through their store; direct downloads retain the release link.
+  const releases = storeBuild ? null : require('./releases-link.cjs');
   let guests;
   const directAccess = createDirectAccess({
     journalPath: path.join(app.getPath('userData'), 'direct-access-lease.json'),
@@ -161,7 +165,7 @@ app.whenReady().then(async () => {
     return { app: require('../package.json').version, electron: process.versions.electron, chrome: process.versions.chrome, os: process.platform, osRelease: os.release(), arch: process.arch,
       cpuModel: cpus[0]?.model?.trim() ?? null, cpuCores: cpus.length, memoryMiB: Math.round(os.totalmem() / 1048576), gpuFeatures: app.getGPUFeatureStatus(), gpuDevices: await gpuDevices() };
   } });
-  for (const [name, method, count] of [['renameRecording',library.rename,2], ['openLibraryRecording',library.open,1], ['saveDevicePreferences',preferences.saveDevices,1], ['chooseSceneBackdrop', async id => {
+  for (const [name, method, count] of [['renameRecording',library.rename,2], ['openLibraryRecording',library.open,1], ['saveDevicePreferences',preferences.saveDevices,1], ['saveSceneArrangement',preferences.saveArrangement,2], ['resetSceneArrangement',preferences.resetArrangement,1], ['chooseSceneBackdrop', async id => {
       if(!['1cam','2cam','3cam','4cam','5cam','6cam','7cam','8cam','screensharevert-8','screensharehorizont-8'].includes(id)) return {ok:false,message:'Unknown scene.'};
       const chosen=await dialog.showOpenDialog(window,{title:'Choose a 1920 × 1080 PNG backdrop',properties:['openFile'],filters:[{name:'PNG backdrop',extensions:['png']}]});
       if(chosen.canceled||chosen.filePaths.length!==1)return {ok:false,cancelled:true,message:'Backdrop selection cancelled.'};
@@ -299,8 +303,8 @@ app.whenReady().then(async () => {
   registerBridge(ipcMain, () => window?.webContents, {
     // ClaudeBWAI — einh 5 Oct: under MAS updates come only through the store; nothing opens and no URL is offered.
     appInfo:()=>({version:app.getVersion(),updates:releases?releases.releasesUrl:null}),
-    openUpdates:async()=>releases?releases.openReleases(shell):{ok:false,message:'Updates come through the App Store.'},
-    listRecordings:library.list, getSceneBackdrops:preferences.getBackdrops, loadDevicePreferences:preferences.loadDevices,
+    openUpdates:async()=>releases?releases.openReleases(shell):{ok:false,message:windowsStore?'Updates come through the Microsoft Store.':'Updates come through the App Store.'},
+    loadSceneArrangements:preferences.loadArrangements, listRecordings:library.list, getSceneBackdrops:preferences.getBackdrops, loadDevicePreferences:preferences.loadDevices,
     sourceStatus: coordinator.sourceStatus,
     guestStatus: async () => {
       const current = guestAccess.status();

@@ -45,6 +45,23 @@ async function room(t, names, admitted = names.map(() => true)) {
 const say = (port, token, text) => send(port, '/api/chat/send', { token, body: { text } });
 const poll = (port, token, since) => send(port, '/api/chat/poll', { token, body: { since } });
 
+// CodexBWAI — authenticated status may disclose only admitted participant labels,
+// never pending/departed names or the session identifiers backing them.
+test('status exposes a minimal admitted-only participant roster', async t => {
+  const { port, guests, sessions } = await room(t, ['Ann', '<b>Bo</b>', 'Waiting', 'Left', 'Removed', 'Revoked'], [true, true, false, true, true, true]);
+  await send(port, '/api/leave', { token: sessions[3] });
+  guests.remove(guests.status().guests[4].session.id);
+  guests.revokeInvite(guests.status().guests[5].id);
+  assert.deepEqual((await send(port, '/api/status', { token: sessions[0] })).body.participants, [
+    { name: 'Host', host: true, mine: false },
+    { name: 'Ann', host: false, mine: true },
+    { name: '<b>Bo</b>', host: false, mine: false },
+  ]);
+  assert.equal((await send(port, '/api/status', { token: sessions[2] })).body.participants, undefined);
+  guests.revoke();
+  assert.equal((await send(port, '/api/status', { token: sessions[0] })).body.participants, undefined);
+});
+
 test('a waiting-room guest is refused on both routes', async t => {
   const { port, sessions } = await room(t, ['Waiting'], [false]);
   assert.ok([400, 410].includes((await say(port, sessions[0], 'hi')).status));

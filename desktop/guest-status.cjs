@@ -9,7 +9,7 @@ function guestRows(ctx) {
       g.phase = g.revoked ? 'revoked' : 'expired';
     }
     // ClaudeBWAI — presence rides beside the admission phase, never instead of it.
-    if (g.session && g.phase === 'admitted') {
+    if (g.session && (g.phase === 'admitted' || (g.phase === 'left' && g.alive && !g.revoked && g.delivery))) {
       g.uploading = sourceInFlight.has(g.session.id);
       if (originalsUnsupported.has(g.session.id)) g.originalsUnsupported = true;
       g.presence = g.uploading ? 'connected' : presence.state(g.session.id);

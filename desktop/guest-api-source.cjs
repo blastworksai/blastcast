@@ -3,6 +3,20 @@
 const { headers, send, rawBody } = require('./guest-http.cjs');
 
 const RETRY_HEADERS = { ...headers, 'Retry-After': '1' };
+const DELIVERY_ROUTES = new Set(['/api/source/begin', '/api/source/chunk', '/api/source/finish']);
+const deliveryRoute = url => DELIVERY_ROUTES.has(url);
+// Recheck after asynchronous body reads. A departed guest has only the server's
+// departure-time epoch snapshot; this does not open source status, calls or chat.
+function canDeliver(ctx, token, current, metadata) {
+  if (ctx.state.generation !== current || !ctx.state.verified) return false;
+  const a = ctx.store.sourceDeliveryStatus(token);
+  if (!a.ok) return false;
+  if (a.phase === 'admitted') return true;
+  const status = ctx.sources.status();
+  return a.phase === 'left' && status && status.phase !== 'closed' &&
+    status.episodeId === a.delivery.episodeId && metadata?.episodeId === a.delivery.episodeId &&
+    a.delivery.epochs.includes(metadata?.epochId);
+}
 
 function sourceStatus(ctx, request, response, { participantId, body }) {
   const { sources, originalsUnsupported } = ctx;
@@ -28,7 +42,8 @@ function sourceStatus(ctx, request, response, { participantId, body }) {
     hostNowMs: status.hostNowMs,eligible,...(recoveryKey ? { recoveryKey } : {}) }, source: ownSource });
 }
 
-async function sourceBegin(ctx, request, response, { participantId, body }) {
+async function sourceBegin(ctx, request, response, { token, participantId, body, current }) {
+  if (!canDeliver(ctx, token, current, body)) { send(response, 410, { message: 'This original delivery is closed.' }); return; }
   const res = await ctx.sources.beginSource(participantId, body);
   if (!res.ok) send(response, res.gone ? 410 : 400, { message: res.message });
   else send(response, 200, res);
@@ -44,11 +59,6 @@ function chunkMetadata(request, response) {
   catch { request.resume(); send(response, 400, { message: 'Invalid request.' }); return null; }
   return metadata;
 }
-
-const stillAdmitted = (ctx, token, current) => {
-  const a2 = ctx.store.guestStatus(token);
-  return !(ctx.state.generation !== current || !ctx.state.verified || !a2.ok || a2.phase !== 'admitted');
-};
 
 async function sourceChunk(ctx, request, response, { token, participantId, current }) {
   const { activeUploads, sources, state } = ctx;
@@ -67,7 +77,7 @@ async function sourceChunk(ctx, request, response, { token, participantId, curre
   request.extendDeadline?.(30_000);
   try {
     const chunkBuffer = await rawBody(request, 8 * 1024 * 1024);
-    if (!stillAdmitted(ctx, token, current)) { didComplete = true; send(response, 410, { message: 'This guest session is closed.' }); return; }
+    if (!canDeliver(ctx, token, current, metadata)) { didComplete = true; send(response, 410, { message: 'This guest session is closed.' }); return; }
     const res = await sources.appendSource(participantId, metadata, chunkBuffer);
     didComplete = true;
     if (response.destroyed) return;
@@ -84,7 +94,7 @@ async function sourceChunk(ctx, request, response, { token, participantId, curre
 }
 
 async function sourceFinish(ctx, request, response, { token, participantId, body, current }) {
-  if (!stillAdmitted(ctx, token, current)) { send(response, 410, { message: 'This guest session is closed.' }); return; }
+  if (!canDeliver(ctx, token, current, body)) { send(response, 410, { message: 'This guest session is closed.' }); return; }
   request.extendDeadline?.(120_000);
   try {
     const res = await ctx.sources.finishSource(participantId, body);
@@ -103,4 +113,4 @@ const sourceRoutes = {
   '/api/source/finish': sourceFinish,
 };
 
-module.exports = { sourceRoutes, sourceStatus, sourceBegin, sourceChunk, sourceFinish };
+module.exports = { deliveryRoute, sourceRoutes, sourceStatus, sourceBegin, sourceChunk, sourceFinish };

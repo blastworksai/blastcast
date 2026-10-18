@@ -7,6 +7,13 @@ export const CANVAS_H = 1080;
 export interface SlotRect {
   readonly x: number; readonly y: number; readonly w: number; readonly h: number;
 }
+// CodexBWAI — camera geometry is in the canonical 1920×1080 space; array order is back to front.
+export type CameraPlacement = { readonly index: number; readonly x: number; readonly y: number };
+export type SceneArrangement = readonly CameraPlacement[];
+export function cameraPosition(rect: SlotRect, x: number, y: number): SlotRect {
+  return { ...rect, x: Math.max(48 - rect.w, Math.min(CANVAS_W - 48, x)),
+    y: Math.max(48 - rect.h, Math.min(CANVAS_H - 48, y)) };
+}
 export type SourceKind = 'camera' | 'screenshare';
 export interface SceneSlot {
   readonly rect: SlotRect;
@@ -197,6 +204,7 @@ export type AssetResolver = (filename: string) => Promise<CanvasImageSource>;
 export interface CompositorOptions {
   readonly scene: SceneDefinition;
   readonly customBackdrop?: boolean;
+  readonly arrangement?: SceneArrangement;
   readonly resolveAsset: AssetResolver;
   readonly sources: readonly DrawableSource[];
 }
@@ -225,6 +233,7 @@ export interface FrameLayout {
 }
 export interface LayoutOptions {
   readonly customBackdrop?: boolean;
+  readonly arrangement?: SceneArrangement;
   /** Width of `text` in `fontSize` semibold px; the 2D path passes the real canvas measure. */
   readonly measure?: (text: string, fontSize: number) => number;
 }
@@ -245,8 +254,16 @@ export function layoutFrame(scene: SceneDefinition, sources: readonly DrawableSo
   const full: SlotRect = { x: 0, y: 0, w: CANVAS_W, h: CANVAS_H };
   ops.push({ op: 'clear' }, { op: 'rect', rect: full, color: OPAQUE_BASE });
 
-  const slots = resolvedSceneSlots(scene, sources);
-  if (scene.hasScreenshare) {
+  const defaults = resolvedSceneSlots(scene, sources);
+  const free = options.arrangement;
+  const cameras = defaults.filter(slot => slot.kind === 'camera').map(slot => {
+    const placement = free?.find(frame => frame.index === slot.index);
+    return placement ? { ...slot, rect: cameraPosition(slot.rect, placement.x, placement.y) } : slot;
+  });
+  if (free) cameras.sort((a,b) => free.findIndex(frame => frame.index === a.index) - free.findIndex(frame => frame.index === b.index));
+  const slots = free ? [...defaults.filter(slot => slot.kind === 'screenshare'), ...cameras] : defaults;
+  if (free) ops.push({ op: 'backdrop' });
+  if (scene.hasScreenshare && !free) {
     if (options.customBackdrop) ops.push({ op: 'backdrop' });
     else {
       // Retain the supplied brand header only. The fixed eight-frame portion is never drawn.
@@ -279,7 +296,7 @@ export function layoutFrame(scene: SceneDefinition, sources: readonly DrawableSo
     }
   }
   // Transparent background over the top to preserve branding and anti-aliased borders
-  if (!scene.hasScreenshare) ops.push({ op: 'overlay' });
+  if (!scene.hasScreenshare && !free) ops.push({ op: 'overlay' });
   return { width, height, ops };
 }
 
@@ -304,6 +321,7 @@ export interface FrameDrawOptions {
   /** The scene's PNG (resolved by the caller); drawn as header, backdrop or top overlay. */
   readonly overlay?: CanvasImageSource | null;
   readonly customBackdrop?: boolean;
+  readonly arrangement?: SceneArrangement;
 }
 /** The one interface the studio draws through; Canvas 2D and WebGL2 both implement it. */
 export interface FrameCompositor {
@@ -322,7 +340,7 @@ export function createCanvas2dCompositor(canvas: HTMLCanvasElement | OffscreenCa
     backend: 'canvas2d',
     draw(scene, sources, width, height, options = {}) {
       const layout = layoutFrame(scene, sources, width, height, {
-        customBackdrop: options.customBackdrop,
+        customBackdrop: options.customBackdrop, arrangement: options.arrangement,
         measure: (text, fontSize) => { ctx.font = `600 ${fontSize}px sans-serif`; return ctx.measureText(text).width; },
       });
       const scaled = width !== CANVAS_W || height !== CANVAS_H;
@@ -466,7 +484,7 @@ export function createGlCompositor(canvas: HTMLCanvasElement | OffscreenCanvas, 
     backend: 'webgl2',
     draw(scene, sources, width, height, drawOptions = {}) {
       if (contextLost || g.isContextLost()) return;
-      const layout = layoutFrame(scene, sources, width, height, { customBackdrop: drawOptions.customBackdrop, measure });
+      const layout = layoutFrame(scene, sources, width, height, { customBackdrop: drawOptions.customBackdrop, arrangement: drawOptions.arrangement, measure });
       const overlay = drawOptions.overlay as object | null | undefined;
       let overlayT: WebGLTexture | null = null;
       for (const [k, t] of overlayTex) if (k !== overlay) { g.deleteTexture(t); overlayTex.delete(k); }
@@ -553,7 +571,7 @@ export class SceneCompositor {
     const { scene, resolveAsset, sources } = options;
     const overlay = await resolveAsset(scene.asset);
     if (gen !== this.generation) return gen;
-    paintLayout2d(ctx, layoutFrame(scene, sources, CANVAS_W, CANVAS_H, { customBackdrop: options.customBackdrop }), overlay);
+    paintLayout2d(ctx, layoutFrame(scene, sources, CANVAS_W, CANVAS_H, { customBackdrop: options.customBackdrop, arrangement: options.arrangement }), overlay);
     return gen;
   }
 
@@ -563,7 +581,7 @@ export class SceneCompositor {
     const { scene, resolveAsset, sources } = options;
     const overlay = await resolveAsset(scene.asset);
     if (gen !== this.generation) return gen;
-    compositor.draw(scene, sources, width, height, { overlay, customBackdrop: options.customBackdrop });
+    compositor.draw(scene, sources, width, height, { overlay, customBackdrop: options.customBackdrop, arrangement: options.arrangement });
     return gen;
   }
 }

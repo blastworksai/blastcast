@@ -4,7 +4,7 @@ const { TOKEN, REDEEMPTION_KEY, SESSION_RE, headers, send, bearerToken, jsonBody
 const { isReadinessAsset, serveReadinessAsset, guestAssetPath, hasAsset, serveAsset } = require('./guest-static.cjs');
 const { handleReadinessConfirm } = require('./guest-readiness.cjs');
 const { callConfiguration } = require('./guest-status.cjs');
-const { sourceRoutes } = require('./guest-api-source.cjs');
+const { sourceRoutes, deliveryRoute } = require('./guest-api-source.cjs');
 
 const ALLOWED_POSTS = ['/api/redeem', '/api/preview', '/api/join', '/api/status', '/api/leave', '/api/call/send', '/api/call/poll', '/api/call/config', '/api/source/status', '/api/source/begin', '/api/source/chunk', '/api/source/finish', '/api/page-gone', '/api/chat/send', '/api/chat/poll'];
 const TOO_MANY = { message: 'Too many requests. Wait a moment and retry.' };
@@ -20,7 +20,11 @@ function join(ctx, request, response, { token, body, statusRes }) {
 
 function leave(ctx, request, response, { token, body, statusRes }) {
   if (Object.keys(body).length > 0) { invalid(response); return; }
-  ctx.store.leaveSession(token);
+  const state = ctx.sources?.status();
+  const own = state?.sources.find(s => s.participantId === statusRes.sessionId);
+  const delivery = state && state.phase !== 'closed' && own
+    ? { episodeId: state.episodeId, epochs: own.epochs.map(e => e.epochId) } : null;
+  ctx.store.leaveSession(token, delivery);
   ctx.limiter.forget(`s:${statusRes.sessionId}`);
   ctx.signaling.pruneAll(); ctx.chatPrune();
   send(response, 200, { ok: true, phase: 'left' });
@@ -71,10 +75,16 @@ function chatPoll(ctx, request, response, { token, body }) {
   send(response, 200, { ok: true, messages, latestId: ctx.chat.latestId() + 1 });
 }
 
-// For status and preview, we just return the current phase.
+// Preview is phase-only. Status shares names only inside the admitted live room.
 function phaseOnly(ctx, request, response, { body, statusRes }) {
   if (Object.keys(body).length > 0) { invalid(response); return; }
-  send(response, 200, { ok: true, phase: statusRes.phase, expiresAt: statusRes.expiresAt });
+  const participants = request.url === '/api/status' && statusRes.phase === 'admitted'
+    ? [{ name: 'Host', host: true, mine: false }, ...ctx.store.hostList().guests
+      .filter(g => g.alive && !g.revoked && g.phase === 'admitted' && g.session &&
+        !ctx.presence.isGone(g.session.id) && ctx.presence.state(g.session.id) !== 'disconnected')
+      .map(g => ({ name: g.session.name, host: false, mine: g.session.id === statusRes.sessionId }))] : undefined;
+  send(response, 200, { ok: true, phase: statusRes.phase, expiresAt: statusRes.expiresAt,
+    ...(participants ? { participants } : {}) });
 }
 
 const sessionRoutes = {
@@ -101,11 +111,11 @@ function redeem(ctx, response, token, body) {
   send(response, 200, { ok: true, phase: 'redeemed', sessionCredential: res.sessionCredential, expiresAt: res.expiresAt });
 }
 
-// Call and source routes need an admitted session before the body is read; returns false after answering.
+// Calls/chat/status need admission. Original writes also accept a pinned departure delivery before reading their body.
 function gateAdmitted(ctx, request, response, token) {
-  const authorized = SESSION_RE.test(token) && ctx.store.guestStatus(token);
+  const authorized = SESSION_RE.test(token) && (deliveryRoute(request.url) ? ctx.store.sourceDeliveryStatus(token) : ctx.store.guestStatus(token));
   if (!authorized || !authorized.ok) { request.resume(); send(response, 410, { message: 'This guest session is closed.' }); return false; }
-  if (authorized.phase !== 'admitted') { request.resume(); send(response, 400, { message: 'Not admitted.' }); return false; }
+  if (authorized.phase !== 'admitted' && !(deliveryRoute(request.url) && authorized.phase === 'left')) { request.resume(); send(response, 400, { message: 'Not admitted.' }); return false; }
   if (request.url.startsWith('/api/source/') && !ctx.sources) { request.resume(); send(response, 503, { message: 'Sources not configured.' }); return false; }
   return true;
 }
@@ -164,11 +174,11 @@ async function handleApi(ctx, request, response, current) {
   // For all other endpoints, 'token' is actually the sessionCredential
   if (!SESSION_RE.test(token)) { send(response, 410, { message: 'Invalid session credential.' }); return; }
 
-  const statusRes = ctx.store.guestStatus(token);
+  const statusRes = deliveryRoute(request.url) ? ctx.store.sourceDeliveryStatus(token) : ctx.store.guestStatus(token);
   if (!statusRes.ok) { send(response, 410, { message: statusRes.message }); return; }
   trackPresence(ctx, request, response, statusRes.sessionId);
 
-  if (request.url.startsWith('/api/source/') && statusRes.phase !== 'admitted') {
+  if (request.url.startsWith('/api/source/') && statusRes.phase !== 'admitted' && !(deliveryRoute(request.url) && statusRes.phase === 'left')) {
     request.resume(); send(response, 410, { message: 'This guest session is closed.' }); return;
   }
 

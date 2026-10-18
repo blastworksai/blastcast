@@ -1,4 +1,4 @@
-// CodexBWAI — temporary device discovery owns its tracks; it never starts a preview/call.
+// CodexBWAI — host discovery owns temporary tracks; guest activation delegates to its preview owner.
 type Kind = 'video' | 'audio';
 type Options = {
   authorize: () => Promise<boolean>;
@@ -8,6 +8,8 @@ type Options = {
   live: () => boolean;
   busy: (value: boolean) => void;
   message: (value: string, error?: boolean) => void;
+  /** Guest opt-in: caller owns preview authorization, tracks, enumeration and cancellation. */
+  activatePreview?: () => Promise<void>;
   denied?: () => void; // ClaudeBWAI — studio explains a denial (macOS status + Open System Settings)
 };
 export class DeviceAccess {
@@ -34,6 +36,19 @@ export class DeviceAccess {
     if (this.flight) return this.flight;
     if (!this.options.canRequest() || this.options.live()) return Promise.resolve();
     const generation = this.generation;
+    if (this.options.activatePreview) {
+      const activate = this.options.activatePreview;
+      // Same initiating gesture task, with flight set before callbacks run.
+      // Unlike discovery, the preview owns its tracks and keeps them live.
+      this.flight = Promise.resolve().then(async () => {
+        if (generation !== this.generation || !this.options.canRequest() || this.options.live()) return;
+        await activate();
+      }).catch(() => {
+        if (generation === this.generation) this.options.message('Devices could not start. Use Retry camera & microphone.', true);
+      }).finally(() => { this.flight = null; this.options.busy(false); });
+      this.options.busy(true);
+      return this.flight;
+    }
     // Defer work until flight is assigned, preventing a synchronous UI callback race.
     this.flight = Promise.resolve().then(async () => {
       this.options.message('Allow camera and microphone access to list devices. Preview stays off.');

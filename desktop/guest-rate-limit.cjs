@@ -2,6 +2,7 @@
 // (1000 other per 10 s) divided by MAX_GUESTS and rounded up; chunks keep the old 3000 per credential.
 // Unauthenticated traffic shares one small pre-auth bucket and can never take from a guest's bucket.
 // Split out of guests.cjs (no behaviour change). Pure apart from the injected clock and admission store.
+const { deliveryRoute } = require('./guest-api-source.cjs');
 const { MAX_GUESTS } = require('./admission.cjs');
 const { SESSION_RE } = require('./guest-http.cjs');
 
@@ -39,7 +40,7 @@ function createRateLimiter({ now = Date.now, store }) {
     if (!SESSION_RE.test(token)) return null;
     if (request.method === 'POST' && request.url === '/api/redeem') return store.inviteIsLive(token) ? `i:${token}` : null;
     if (request.method !== 'POST' || !request.url.startsWith('/api/')) return null;
-    const st = store.guestStatus(token);
+    const st = deliveryRoute(request.url) ? store.sourceDeliveryStatus(token) : store.guestStatus(token);
     return st.ok ? `s:${st.sessionId}` : null;
   }
   /** True when this request is over its limit. Counted only AFTER the Host check. */

@@ -11,8 +11,9 @@ const desktop = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'd
 const STOP = new Error('stop at tunnel');
 const RESOURCES = '/Applications/BlastCast.app/Contents/Resources';
 
-async function boot({ mas }) {
+async function boot({ mas, windowsStore = false }) {
   const loaded = [];
+  const captureAuthorized = [];
   const tunnelOptions = [];
   const errors = [];
   const handlers = new Map();
@@ -29,24 +30,26 @@ async function boot({ mas }) {
   const trapped = new Set(['license-store.cjs', 'license-key.cjs', 'releases-link.cjs']);
   const stubs = {
     'free-tunnel.cjs': { createFreeTunnel: options => { tunnelOptions.push(options); throw STOP; } },
-    'display-picker.cjs': { installDisplayPicker: () => ({}) },
+    'display-picker.cjs': { installDisplayPicker: options => { captureAuthorized.push(options.authorized()); return {}; } },
   };
   const realLoad = Module._load;
   Module._load = function (request, parent, isMain) {
     if (request === 'electron') return electron;
     const base = path.basename(request);
     if (parent?.filename?.startsWith(desktop)) {
-      if (trapped.has(base)) { loaded.push(base); const e = new Error(`Cannot find module '${request}'`); e.code = 'MODULE_NOT_FOUND'; if (mas) throw e; }
+      if (trapped.has(base)) { loaded.push(base); const e = new Error(`Cannot find module '${request}'`); e.code = 'MODULE_NOT_FOUND'; if (mas || windowsStore === true) throw e; }
       if (stubs[base]) return stubs[base];
     }
     return realLoad.call(this, request, parent, isMain);
   };
   const main = path.join(desktop, 'main.cjs');
   const savedMas = Object.getOwnPropertyDescriptor(process, 'mas');
+  const savedWindowsStore = Object.getOwnPropertyDescriptor(process, 'windowsStore');
   const savedResources = process.resourcesPath;
   // main.cjs and every module it requires must load fresh for each flavour.
   for (const key of Object.keys(require.cache)) if (key.startsWith(desktop)) delete require.cache[key];
   if (mas) process.mas = true; else delete process.mas;
+  process.windowsStore = windowsStore;
   process.resourcesPath = RESOURCES;
   try {
     require(main);
@@ -55,10 +58,11 @@ async function boot({ mas }) {
   } finally {
     Module._load = realLoad;
     if (savedMas) Object.defineProperty(process, 'mas', savedMas); else delete process.mas;
+    if (savedWindowsStore) Object.defineProperty(process, 'windowsStore', savedWindowsStore); else delete process.windowsStore;
     process.resourcesPath = savedResources;
     for (const key of Object.keys(require.cache)) if (key.startsWith(desktop)) delete require.cache[key];
   }
-  return { loaded, tunnelOptions, errors, handlers };
+  return { loaded, tunnelOptions, errors, handlers, captureAuthorized };
 }
 
 test('MAS: main.cjs never loads license-store, license-key or releases-link and the tunnel uses the bundled helper', async () => {
@@ -86,4 +90,19 @@ test('non-MAS: license-store is loaded and the tunnel gets no executable overrid
   assert.ok(loaded.includes('releases-link.cjs'));
   assert.equal(tunnelOptions.length, 1);
   assert.equal('executable' in tunnelOptions[0], false);
+});
+
+// CodexBWAI — paid MSIX must unlock the actual main-process capture gate without key modules.
+test('Microsoft Store: main startup enables capture without a key and preserves the Windows tunnel path', async () => {
+  const { loaded, tunnelOptions, captureAuthorized } = await boot({ mas: false, windowsStore: true });
+  assert.deepEqual(captureAuthorized, [true]);
+  assert.deepEqual(loaded, []);
+  assert.deepEqual(tunnelOptions.map(o => o.executable), [undefined]);
+});
+
+// The MSIX flag is a strict Electron boolean; a string must not unlock direct downloads.
+test('direct download remains key-gated when windowsStore is not boolean true', async () => {
+  const { loaded, captureAuthorized } = await boot({ mas: false, windowsStore: 'true' });
+  assert.deepEqual(captureAuthorized, [false]);
+  assert.ok(loaded.includes('license-store.cjs'));
 });
