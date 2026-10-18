@@ -196,7 +196,7 @@ function createAdmissionStore(options = {}) {
     if (!alive(inv) && (phase === 'admitted' || phase === 'pending')) {
       phase = inv.revokedAt !== null ? 'revoked' : 'expired';
     }
-    return deepCopy({ ...base, phase, session });
+    return deepCopy({ ...base, phase, session, ...(s.delivery ? { delivery: s.delivery } : {}) });
   }
 
   // ── Public operations ───────────────────────────────────────────
@@ -323,6 +323,7 @@ function createAdmissionStore(options = {}) {
         if (s.leftAt !== null && activeCount() >= maxGuests) {
           return { ok: false, message: `At most ${maxGuests} invitations may be active. Revoke one first.` };
         }
+        s.delivery = null;
         s.sessionCredential = genToken();
         s.name = null;
         s.consentedAt = null;
@@ -524,6 +525,17 @@ function createAdmissionStore(options = {}) {
     return { ok: true, phase, expiresAt: inv.expiresAt, sessionId: s.id, name: s.name };
   }
 
+  // CodexBWAI — departure revokes call admission, not delivery of an already begun original.
+  // Removal, revocation, credential rotation and reset still invalidate this narrow path.
+  function sourceDeliveryStatus(sessionCredential) {
+    const status = guestStatus(sessionCredential);
+    if (status.ok) return status;
+    if (typeof sessionCredential !== 'string' || !SESSION_RE.test(sessionCredential)) return status;
+    const inv = bySession(sessionCredential), s = inv?.session;
+    if (!inv || !alive(inv) || !s || s.decision !== 'admitted' || s.removedAt !== null || s.leftAt === null || !s.delivery) return status;
+    return { ok: true, phase: 'left', sessionId: s.id, delivery: deepCopy(s.delivery) };
+  }
+
   /**
    * Host list — safe defensive-copy public view, no credentials exposed.
    * Each guest entry is a deep copy — no live internal references.
@@ -541,7 +553,7 @@ function createAdmissionStore(options = {}) {
    * Guest leaves session. Records a distinct voluntary departure (invalidating access) in all phases.
    * @param {string} sessionCredential
    */
-  function leaveSession(sessionCredential) {
+  function leaveSession(sessionCredential, delivery = null) {
     if (typeof sessionCredential !== 'string' || !SESSION_RE.test(sessionCredential)) {
       return { ok: false, message: 'Invalid session.' };
     }
@@ -550,6 +562,9 @@ function createAdmissionStore(options = {}) {
     const s = inv.session;
     if (s.leftAt !== null) return { ok: true, idempotent: true };
     if (s.removedAt !== null) return { ok: false, message: 'You were removed from this session.' };
+    // Server-supplied snapshot only: no grant for new epochs or unadmitted guests.
+    s.delivery = alive(inv) && s.decision === 'admitted' && delivery?.epochs?.length
+      ? deepCopy(delivery) : null;
     s.leftAt = now();
     return { ok: true };
   }
@@ -567,6 +582,7 @@ function createAdmissionStore(options = {}) {
     removeGuest,
     leaveSession,
     guestStatus,
+    sourceDeliveryStatus,
     inviteIsLive,
     isSessionAdmitted,
     hostList,

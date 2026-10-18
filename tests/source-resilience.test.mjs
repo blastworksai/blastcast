@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { SourceOutbox, SourceTransportError } from '../dist/source-outbox.js';
 import { GuestCall } from '../dist/guest-call.js';
 import { SourceCapture } from '../dist/source-capture.js';
+import { SourceSession } from '../dist/source-session.js';
 const require = createRequire(import.meta.url);
 const { createGuestServer } = require('../desktop/guests.cjs');
 const { createSourceStore } = require('../desktop/sources.cjs');
@@ -207,4 +208,83 @@ test('the call poll survives a 429 and polls again instead of dropping the call'
   await until(() => calls >= 3, 6000);
   assert.doesNotMatch(status.textContent, /interrupted/);
   call.close();
+});
+
+// CodexBWAI — departure is capture-stop plus delivery, never failure/cancellation.
+test('voluntary departure preserves the delayed final recorder slice after devices detach', async t => {
+  const previous = globalThis.MediaRecorder;
+  class LastSliceRecorder extends Rec {
+    stop() { this.state='inactive'; setTimeout(() => {
+      for (const f of this.l.dataavailable??[]) f({data:new Blob(['final original'])});
+      for (const f of this.l.stop??[]) f();
+    }, 5); }
+  }
+  globalThis.MediaRecorder = LastSliceRecorder;
+  const delivered=[];
+  const track=()=>({readyState:'live',getSettings:()=>({}),addEventListener(){},removeEventListener(){}});
+  const stream={getVideoTracks:()=>[track()],getAudioTracks:()=>[track()]};
+  const session=new SourceSession(async()=>({ok:true,episode:{episodeId:crypto.randomUUID(),phase:'recording',eligible:true,hostNowMs:performance.now()}}),{
+    begin:async d=>({ok:true,...d}),
+    append:async(c,b)=>{delivered.push(Buffer.from(b));return {ok:true,...c};},
+    finish:async e=>({ok:true,...e,bytes:delivered.reduce((n,b)=>n+b.length,0)}),
+  },()=>{},()=>{});
+  t.after(()=>{session.close();globalThis.MediaRecorder=previous;});
+  session.update(true,stream);await until(()=>session.state?.phase==='recording');
+  session.leave();session.update(false,null);
+  await until(()=>session.state?.phase==='complete');
+  assert.deepEqual(Buffer.concat(delivered),Buffer.from('final original'));
+});
+
+test('durable delivery survives the direct-transport finalize deadline while saved pieces drain', async t => {
+  const store=new Queue();let release,recorder;
+  const track=()=>({readyState:'live',getSettings:()=>({}),addEventListener(){},removeEventListener(){}});
+  const transport={begin:async d=>({ok:true,...d}),append:async c=>{await new Promise(r=>{release=r;});return {ok:true,...c};},finish:async e=>({ok:true,...e,bytes:3})};
+  const capture=new SourceCapture({transport,onState:()=>{},finalizeTimeoutMs:10,makeRecorder:()=>recorder=new Rec(),
+    durable:(progress,failed)=>new SourceOutbox({store,transport,progress,failed})});
+  t.after(()=>capture.fail('test cleanup'));
+  await capture.start({getVideoTracks:()=>[track()],getAudioTracks:()=>[track()]},{episodeId:'e',epochId:'p',clock:{hostNowMs:0,localMonoMs:0,uncertaintyMs:0}});
+  for(const f of recorder.l.dataavailable??[])f({data:new Blob(['raw'])});
+  await until(()=>release);
+  const stopped=capture.stop();await new Promise(r=>setTimeout(r,30));release();await stopped;
+  assert.equal(capture.state.phase,'complete',capture.state.message);
+  assert.equal(store.record.ackedBytes,3);
+});
+
+test('a departed browser delivers its begun original to disk but cannot rejoin calls, start epochs or bypass revoke', async t => {
+  const folder=await fs.mkdtemp('/var/tmp/blastcast-departure-');
+  const {element:e,uint,ID}=require('../desktop/webm.cjs');
+  const raw=Buffer.concat([e(ID.EBML,e(0x4282,Buffer.from('webm'))),Buffer.from('18538067ff','hex'),
+    e(ID.INFO,e(ID.SCALE,uint(1000000))),e(ID.TRACKS,e(0xae,Buffer.concat([e(0xd7,uint(1)),e(0x83,uint(1))]))),
+    e(ID.CLUSTER,Buffer.concat([e(ID.TIME,uint(0)),e(ID.SIMPLE,Buffer.from([0x81,0,0,0x80,1,2,3]))]))]);
+  const sources=createSourceStore({folder:()=>folder}),port=await freePort();
+  const {guests,session,host,origin,id}=await admitted(port,sources);
+  t.after(async()=>{await guests.stop();await sources.shutdown({timeoutMs:100});await fs.rm(folder,{recursive:true,force:true});});
+  const episodeId=crypto.randomUUID(),epochId=crypto.randomUUID();
+  const begun=await sources.beginEpisode({id:episodeId,participants:[{id:'host',label:'Host'},{id,label:'A'}]});
+  assert.equal(begun.ok,true,begun.message);
+  const d={episodeId,epochId,mimeType:'video/webm;codecs=vp8,opus',startedMonoMs:0,hostStartedMs:0,clockUncertaintyMs:0,width:640,height:480};
+  const send=(route,body)=>post(port,route,{host,origin,token:session,body});
+  const begunSource=await send('/api/source/begin',d);
+  assert.equal(begunSource.status,200,JSON.stringify(begunSource.body));
+  const m={episodeId,epochId,sequence:0,byteLength:raw.length,sha256:crypto.createHash('sha256').update(raw).digest('hex'),startMonoMs:0,endMonoMs:1};
+  // Start reading an upload while admitted, finish its body after Leave.
+  const req=http.request({hostname:'127.0.0.1',port,method:'POST',path:'/api/source/chunk',headers:{host,origin,authorization:`Bearer ${session}`,
+    'content-type':'application/octet-stream','content-length':raw.length,'x-blastcast-source':JSON.stringify(m)}});
+  const received=new Promise((resolve,reject)=>{req.on('error',reject);req.on('response',res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});});
+  req.write(raw.subarray(0,1));await until(()=>guests.status().guests[0].uploading);
+  await send('/api/leave',{});req.end(raw.subarray(1));
+  assert.equal(await received,200,'Leave must not reject an already authorized original upload');
+  const blocked=await Promise.all([send('/api/call/config',{}),send('/api/chat/poll',{since:0}),send('/api/source/status',{}),send('/api/source/begin',{...d,epochId:crypto.randomUUID()}),send('/api/source/begin',{...d,episodeId:crypto.randomUUID()})]);
+  assert.deepEqual(blocked.map(r=>r.status),[410,410,410,410,410]);
+  await send('/api/source/begin',d); // Lost begin receipt: same epoch is idempotent.
+  await send('/api/source/finish',{episodeId,epochId,chunkCount:1,endedMonoMs:1});
+  const metadata=JSON.parse(await fs.readFile(path.join(folder,`sources-${episodeId}`,'metadata.json'),'utf8'));
+  assert.deepEqual([metadata.sources.find(s=>s.participantId===id).phase,await fs.readFile(path.join(folder,`sources-${episodeId}`,`${id}-${epochId}.webm.partial`))],['complete',raw]);
+  // Revocation is stronger than departure, including a body already being read.
+  const revoked=http.request({hostname:'127.0.0.1',port,method:'POST',path:'/api/source/chunk',headers:{host,origin,authorization:`Bearer ${session}`,
+    'content-type':'application/octet-stream','content-length':raw.length,'x-blastcast-source':JSON.stringify(m)}});
+  const rejected=new Promise((resolve,reject)=>{revoked.on('error',reject);revoked.on('response',res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});});
+  revoked.write(raw.subarray(0,1));await until(()=>guests.status().guests[0].uploading);
+  guests.revoke();revoked.end(raw.subarray(1));
+  assert.equal(await rejected,410);
 });

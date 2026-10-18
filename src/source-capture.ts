@@ -258,7 +258,7 @@ export class SourceCapture {
   }
 
   private handleTrackEnded = () => {
-    this.fail('Hardware track ended');
+    if (!this.stopped) void this.fail('Hardware track ended');
   };
 
   private handleRecorderUnexpectedStop = () => {
@@ -402,6 +402,8 @@ export class SourceCapture {
       return;
     }
     
+    // A departure during the bitrate probe has no recorder or saved original yet.
+    if (!this.recorder) { await this.fail('Original capture stopped before recording started.'); return; }
     this.stopped = true;
     clearTimeout(this.durationTimer);
     this.stopSlicing();
@@ -457,7 +459,9 @@ export class SourceCapture {
         const finishPromise = this.durable ? this.durable.finish(end) : this.transport.finish(end);
 
         let finishTimerId: ReturnType<typeof setTimeout>;
-        const ack = await Promise.race([
+        // Durable finish includes the entire saved backlog. Each HTTP request has its
+        // own deadline; a slow/offline open page must keep retrying its saved media.
+        const ack = this.durable ? await finishPromise : await Promise.race([
           finishPromise,
           new Promise<any>((_, reject) => { finishTimerId = setTimeout(() => reject(new Error('Finalize timeout')), this.finalizeTimeoutMs); })
         ]).finally(() => clearTimeout(finishTimerId!));

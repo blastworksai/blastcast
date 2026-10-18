@@ -4,10 +4,26 @@ export type DeviceKind = 'camera' | 'microphone';
 /** ClaudeBWAI — a device that stopped sending (its track muted): which one, so the studio can name it and offer Reconnect. */
 export type DeviceNotice = { kind: DeviceKind; label: string; stillMuted: boolean };
 export type PreviewState = { errors?: SourceErrors; notices?: DeviceNotice[]; phase: 'idle' | 'requesting' | 'live' | 'interrupted' | 'error'; message: string; denied?: true };
-export type Selection = { camera: string; microphone: string; height: 1080 | 2160 | 'auto'; cameraEnabled?: boolean; microphoneEnabled?: boolean };
+export type Selection = { camera: string; microphone: string; height: 720 | 1080 | 2160 | 'auto'; cameraEnabled?: boolean; microphoneEnabled?: boolean };
+
+// CodexBWAI: only our own bounded quality error may supply display text.
+class CameraQualityError extends Error {
+  constructor(height: Selection['height']) {
+    const limit = height === 'auto' ? 'Auto (4K)' : `${height}p`;
+    const recovery = height === 'auto' ? 'Choose 720p, 1080p or another camera' : 'Choose Auto or another camera';
+    super(`Camera returned video above the selected ${limit} limit. ${recovery}, then retry.`);
+  }
+}
 
 export function mediaError(error: unknown): string {
+  if (error instanceof CameraQualityError) return error.message;
   const name = error instanceof Error ? error.name : '';
+  if (name === 'OverconstrainedError') {
+    // Only expose known constraint names; browser/driver messages may contain device details.
+    const labels: Record<string, string> = { width: 'camera width', height: 'camera height', frameRate: 'camera frame rate', aspectRatio: 'camera aspect ratio', deviceId: 'selected camera or microphone', sampleRate: 'microphone sample rate', channelCount: 'microphone channel count', echoCancellation: 'microphone echo cancellation', noiseSuppression: 'microphone noise suppression' };
+    const label = labels[(error as { constraint?: string }).constraint ?? ''];
+    if (label) return `The browser refused the ${label}. ${['deviceId', 'sampleRate', 'channelCount', 'echoCancellation', 'noiseSuppression'].includes((error as { constraint?: string }).constraint ?? '') ? 'Refresh devices and choose the microphone or camera again' : 'Choose 720p or another camera'}, then retry.`;
+  }
   const messages: Record<string, string> = {
     NotAllowedError: 'Camera or microphone access was denied. Allow BlastCast in your system privacy settings, then try again.',
     NotFoundError: 'No matching camera or microphone was found. Connect the selected device, refresh the list and try again.',
@@ -40,13 +56,16 @@ export function relaxedVideo(c: MediaStreamConstraints): MediaStreamConstraints 
 }
 
 export function constraints(selection: Selection): MediaStreamConstraints {
-  if (selection.height !== 1080 && selection.height !== 2160 && selection.height !== 'auto') throw new Error('Unsupported resolution');
-  const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
+  if (selection.height !== 720 && selection.height !== 1080 && selection.height !== 2160 && selection.height !== 'auto') throw new Error('Unsupported resolution');
+  const ceiling = selection.height === 720 ? { width: 1280, height: 720 } : selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
   return {
     video: selection.cameraEnabled === false ? false : {
       ...(selection.camera ? { deviceId: { exact: selection.camera } } : {}),
       width: { ideal: ceiling.width, max: ceiling.width },
       height: { ideal: ceiling.height, max: ceiling.height },
+      // CodexBWAI: Auto's large ceiling also admits portrait modes. Prefer
+      // landscape explicitly, without rejecting a camera that cannot supply it.
+      aspectRatio: { ideal: 16 / 9 },
       frameRate: { ideal: 30, max: 30 },
     },
     audio: selection.microphoneEnabled === false ? false : {
@@ -80,6 +99,8 @@ const kindOf = (track: MediaStreamTrack): DeviceKind => track.kind === 'video' ?
 /** A mute this soon after a Reconnect counts as the fresh track also being muted. */
 const STILL_MUTED_WINDOW_MS = 5000;
 export type PreviewOptions = {
+  /** CodexBWAI: guest-only recovery; host capture keeps its existing retry policy. */
+  compatibleVideoFallback?: boolean;
   /** Studio: name the muted device (deviceNoticeText) and publish notices. Off keeps the guest page's generic wording. */
   deviceNotices?: boolean;
   createStream?: (tracks: MediaStreamTrack[]) => MediaStream;
@@ -221,7 +242,7 @@ export class Preview {
         fresh = acquired.getTracks().find(track => track.kind === trackKind) ?? null;
         if (!fresh || fresh.readyState !== 'live') throw new Error('Selected device is not live');
         const settings = fresh.getSettings?.() ?? {};
-        const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
+        const ceiling = selection.height === 720 ? { width: 1280, height: 720 } : selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
         if (exceedsCeiling(settings, ceiling))
           throw new Error('Camera exceeded the selected ceiling');
       } catch (error) {
@@ -262,13 +283,33 @@ export class Preview {
   }
 
   private async acquireWithRetry(c: MediaStreamConstraints, stale: () => boolean): Promise<MediaStream> {
-    try { return await this.acquire(c); } catch (error) {
-      const e = error as { name?: string; constraint?: string };
-      const retry = e?.name === 'OverconstrainedError' && (e.constraint === 'width' || e.constraint === 'height') ? relaxedVideo(c) : null;
-      // A preview stopped or superseded while the first ask was pending must not open the camera again.
-      if (!retry || stale()) throw error;
-      return this.acquire(retry);
+    if (!this.options.compatibleVideoFallback) {
+      try { return await this.acquire(c); } catch (error) {
+        const e = error as { name?: string; constraint?: string };
+        const retry = e?.name === 'OverconstrainedError' && (e.constraint === 'width' || e.constraint === 'height') ? relaxedVideo(c) : null;
+        if (!retry || stale()) throw error;
+        return this.acquire(retry);
+      }
     }
+    const video = c.video;
+    const attempts = [c];
+    if (video && typeof video === 'object') {
+      // CodexBWAI: reproduce the owner's successful manual 720p request before
+      // soft ideals. Deduplicate when 720p was already selected; maximum 3 asks.
+      const bounded = { ...c, video: { ...video, width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 }, frameRate: { ideal: 30, max: 30 } } };
+      if (JSON.stringify(bounded) !== JSON.stringify(c)) attempts.push(bounded);
+      attempts.push({ ...c, video: { ...video, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+    }
+    for (const [i, attempt] of attempts.entries()) {
+      try { return await this.acquire(attempt); } catch (error) {
+        const e = error as { name?: string; constraint?: string };
+        const videoSettings = !e?.constraint || ['width', 'height', 'frameRate', 'aspectRatio'].includes(e.constraint);
+        // Preserve permission, device-id and audio failures. Never change the
+        // selected devices or reopen them after cancellation.
+        if (e?.name !== 'OverconstrainedError' || !videoSettings || stale() || i === attempts.length - 1) throw error;
+      }
+    }
+    throw new Error('No device request was attempted');
   }
 
   // Explicit host toggles isolate failures: an unavailable camera cannot silence a mic.
@@ -291,7 +332,7 @@ export class Preview {
         const tracks = stream.getTracks();
         if (!tracks.length || tracks.some(track => track.readyState !== 'live')) throw new Error('Selected device is not live');
         const settings = stream.getVideoTracks()[0]?.getSettings() ?? {};
-        const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
+        const ceiling = selection.height === 720 ? { width: 1280, height: 720 } : selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
         if (exceedsCeiling(settings, ceiling)) throw new Error('Camera exceeded the selected ceiling');
         this.pending.add(stream);
         return stream;
@@ -352,8 +393,9 @@ export class Preview {
         throw new Error('Both devices must be live');
       }
       const settings = video?.getSettings() ?? {};
-      const ceiling = selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
+      const ceiling = selection.height === 720 ? { width: 1280, height: 720 } : selection.height === 1080 ? { width: 1920, height: 1080 } : { width: 3840, height: 2160 };
       if (exceedsCeiling(settings, ceiling)) { // orientation-neutral: portrait passes the landscape ceiling
+        if (this.options.compatibleVideoFallback) throw new CameraQualityError(selection.height);
         throw new Error('Camera exceeded the selected ceiling');
       }
       for (const track of stream.getTracks()) {

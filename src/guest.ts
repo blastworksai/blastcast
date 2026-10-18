@@ -1,6 +1,7 @@
 // CodexBWAI — browser-only guest page; admitted calls use authenticated signaling.
 import { DeviceAccess } from './device-access.js';
 import { Preview } from './preview.js';
+import { GuestMeter } from './guest-meter.js';
 import { SourceTransportError } from './source-outbox.js';
 import { SourceSession } from './source-session.js';
 import { recoveryFilename, type SourceRecoveryWriter } from './source-recovery.js';
@@ -15,6 +16,8 @@ import { CameraBackground, type CameraBackgroundMode } from './camera-background
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const video = el<HTMLVideoElement>('guest-preview');
 const camera = el<HTMLSelectElement>('guest-camera');
+const quality = el<HTMLSelectElement>('guest-quality');
+const retry = el<HTMLButtonElement>('guest-retry');
 const microphone = el<HTMLSelectElement>('guest-microphone');
 const backgroundSelect = el<HTMLSelectElement>('guest-background');
 const backgroundFile = el<HTMLInputElement>('guest-background-file');
@@ -37,8 +40,7 @@ let valid = false, pending = false, joining = false, terminal = false, admitted 
 let sessionCredential = '';
 let attached: MediaStream | null = null;
 let outgoing: MediaStream | null = null;
-let context: AudioContext | null = null;
-let animation = 0, deviceGeneration = 0;
+let deviceGeneration = 0;
 let deviceAccessBusy = false;
 let originals: SourceSession;
 let share: ScreenShare | undefined;
@@ -110,6 +112,7 @@ function buttons(): void {
   syncPlatform(inCall);
   document.body.classList.toggle('in-call', inCall);
   el('guest-host-panel').hidden = !inCall;
+  if (!inCall) el('guest-participants').replaceChildren();
   if (el('guest-chat-panel').hidden === inCall) el('guest-chat-panel').hidden = !inCall;
   if (inCall) chat.start(); else chat.stop();
   if ((!inCall || !attached) && (share?.stream || share?.busy)) share.stop();
@@ -119,8 +122,8 @@ function buttons(): void {
   el('preview-heading').textContent = inCall ? 'Your camera' : 'Check your camera & microphone';
   el('setup-heading').textContent = inCall ? 'Your devices' : 'Before you join';
   el('guest-leave').textContent = inCall ? 'Leave call' : 'Leave invitation';
-  camera.disabled = microphone.disabled = !valid || deviceAccessBusy || preview.state.phase === 'requesting' || Boolean(originals?.busy);
-  backgroundSelect.disabled = backgroundFile.disabled = !valid || deviceAccessBusy || preview.state.phase === 'requesting' || Boolean(originals?.busy);
+  retry.disabled = quality.disabled = camera.disabled = microphone.disabled = !valid || terminal || joining || deviceAccessBusy || preview.state.phase === 'requesting' || Boolean(originals?.busy);
+  backgroundSelect.disabled = backgroundFile.disabled = !valid || terminal || joining || deviceAccessBusy || preview.state.phase === 'requesting' || Boolean(originals?.busy);
   const deviceToggle = el<HTMLButtonElement>('guest-stop');
   deviceToggle.textContent = attached || preview.state.phase === 'requesting' ? 'Turn devices off' : 'Turn devices on';
   deviceToggle.disabled = !attached && preview.state.phase !== 'requesting' && !inCall;
@@ -129,33 +132,17 @@ function buttons(): void {
   el<HTMLButtonElement>('guest-leave').disabled = !valid;
   el<HTMLButtonElement>('guest-save-recovery').disabled = !originals?.canSaveRecovery;
 }
-function stopMeter(): void {
-  cancelAnimationFrame(animation); const old = context; context = null;
-  if (old) void old.close().catch(() => {});
-  el<HTMLMeterElement>('guest-level').value = 0;
-}
-function meter(stream: MediaStream): void {
-  try {
-    const current = new AudioContext(); context = current;
-    const analyser = current.createAnalyser(); analyser.fftSize = 256;
-    current.createMediaStreamSource(stream).connect(analyser);
-    const values = new Uint8Array(analyser.fftSize);
-    const tick = () => {
-      if (context !== current) return;
-      analyser.getByteTimeDomainData(values);
-      const rms = Math.sqrt(values.reduce((sum, v) => sum + ((v - 128) / 128) ** 2, 0) / values.length);
-      el<HTMLMeterElement>('guest-level').value = preview.microphoneMuted ? 0 : Math.min(100, rms * 300);
-      animation = requestAnimationFrame(tick);
-    };
-    void current.resume().catch(() => status('guest-device-status', 'Your microphone is active, but the meter could not start.'));
-    tick();
-  } catch { status('guest-device-status', 'The input meter is unavailable in this browser.'); }
-}
+const inputMeter = new GuestMeter(
+  value => { el<HTMLMeterElement>('guest-level').value = value; },
+  message => status('guest-meter-status', message),
+  () => preview.microphoneMuted,
+);
+function stopMeter(): void { inputMeter.close(); }
 function publishOutgoing(stream: MediaStream | null): void {
   outgoing = stream; video.srcObject = stream; el('guest-preview-empty').hidden = Boolean(stream);
   call.update(valid && admitted && !terminal, stream);
   originals.update(originalsOk && valid && admitted && !terminal, stream);
-  if (stream) void video.play().catch(() => { if (outgoing === stream) preview.stop('Preview could not display. Ask to join again.'); });
+  if (stream) void video.play().catch(() => { if (outgoing === stream) preview.stop('Preview could not display. Use Retry camera & microphone.'); });
 }
 const background = new CameraBackground(publishOutgoing, (message, error = false) => {
   status('guest-background-status', message, error);
@@ -164,19 +151,24 @@ const background = new CameraBackground(publishOutgoing, (message, error = false
 const preview = new Preview(c => navigator.mediaDevices.getUserMedia(c), (state, stream) => {
   let message = state.message;
   if (admitted && state.phase === 'live') message = 'Devices live. Your camera and microphone are shared while the call is connected; the host may record.';
-  if (message.includes('access was denied')) message = 'Camera or microphone access was denied. Allow this site in your browser’s address-bar permissions and system privacy settings, then ask to join again.';
+  if (state.phase === 'live' && stream) {
+    const settings = stream.getVideoTracks()[0]?.getSettings();
+    if (settings?.width && settings.height) message += ` Camera: ${settings.width} × ${settings.height}.`;
+  }
+  if (message.includes('access was denied')) message = 'Camera or microphone access was denied. In Safari, open Settings for This Website and allow Camera and Microphone. In Chrome, Edge or Firefox, use the site permissions beside the address bar. Also allow your browser in system camera and microphone privacy settings, then use Retry camera & microphone. Your browser may require a page reload; BlastCast cannot force a permission prompt.';
   status('guest-preview-status', message, state.phase === 'error' || state.phase === 'interrupted');
   const mute = el<HTMLButtonElement>('guest-mute');
   mute.textContent = preview.microphoneMuted ? 'Unmute microphone' : 'Mute microphone';
   mute.setAttribute('aria-pressed', String(preview.microphoneMuted));
   if (stream !== attached) {
-    stopMeter(); attached = stream; background.setSource(stream);
+    inputMeter.clear(); attached = stream; background.setSource(stream);
     if (stream) {
-      meter(stream); void devices();
+      inputMeter.attach(stream); void devices();
     }
   }
+  if (!stream && state.phase !== 'requesting') inputMeter.close();
   buttons();
-});
+}, { compatibleVideoFallback: true });
 const call = new GuestCall(api, el<HTMLVideoElement>('guest-host'), el('guest-call-status'), el<HTMLButtonElement>('guest-play-audio'), stream => {
   el('guest-screen-panel').hidden = !stream;
   showScreen(el<HTMLVideoElement>('guest-screen'), stream);
@@ -270,13 +262,23 @@ async function devices(): Promise<boolean> {
       select.replaceChildren(new Option(`System default ${label}`, ''));
       list.filter(d => d.kind === kind && d.deviceId).forEach((d, i) => select.add(new Option(d.label || `${label} ${i + 1}`, d.deviceId)));
       if ([...select.options].some(o => o.value === selected)) select.value = selected;
-      else if (selected) preview.stop('A selected device is unavailable. Select a device and ask to join again.');
+      else if (selected) preview.stop('A selected device is unavailable. Select a device and use Retry camera & microphone.');
     }
-    status('guest-device-status', 'Changing a device turns the current devices off. Ask to join again to apply your choice.');
+    status('guest-device-status', 'Choosing a device or camera quality starts your preview automatically. Use Retry camera & microphone if it fails.');
     return true;
   } catch { status('guest-device-status', 'Could not list devices. Check browser permissions and refresh devices.', true); return false; }
 }
-type Reply = { ok: true; phase: string; expiresAt: number; sessionCredential?: string };
+type Participant = { name: string; host: boolean; mine: boolean };
+type Reply = { ok: true; phase: string; expiresAt: number; sessionCredential?: string; participants?: Participant[] };
+// CodexBWAI — labels belong to the page, never the recorded scene canvas.
+function showParticipants(participants: Participant[]): void {
+  const list = el('guest-participants');
+  list.replaceChildren(...participants.map(participant => {
+    const item = document.createElement('li'); item.dir = 'auto';
+    item.textContent = participant.name + (participant.mine ? ' (you)' : participant.host ? ' (host)' : '');
+    return item;
+  }));
+}
 async function api<T = Reply>(endpoint: string, body: object = {}, timeoutMs = 5000): Promise<T> {
   const auth = endpoint === 'redeem' ? token : sessionCredential;
   const response = await hostFetch(`/api/${endpoint}`, { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
@@ -310,6 +312,7 @@ async function check(): Promise<void> {
     valid = true; 
     pending = result.phase === 'pending';
     admitted = result.phase === 'admitted';
+    showParticipants(admitted ? result.participants ?? [] : []);
     call.update(admitted, outgoing);
     originals.update(originalsOk && admitted && valid && !terminal, outgoing);
     if (!originalsOk && admitted) {
@@ -350,6 +353,7 @@ async function check(): Promise<void> {
   finally { checking = false; buttons(); }
 }
 const deviceAccess = new DeviceAccess({ authorize: async () => valid && !terminal,
+  activatePreview: startPreview,
   acquire: constraints => navigator.mediaDevices.getUserMedia(constraints), refresh: devices,
   canRequest: () => valid && !terminal && !originals.busy && preview.state.phase !== 'requesting',
   live: () => preview.state.phase === 'live',
@@ -357,12 +361,23 @@ const deviceAccess = new DeviceAccess({ authorize: async () => valid && !termina
   message: (message, error) => status('guest-device-status', message, error),
 });
 deviceAccess.bind(camera, 'video'); deviceAccess.bind(microphone, 'audio');
+// CodexBWAI: one selected-quality path for preview, join and in-call recovery.
+function startPreview(): Promise<void> {
+  const starting = preview.start({ camera: camera.value, microphone: microphone.value,
+    height: quality.value === '720' ? 720 : quality.value === '1080' ? 1080 : 'auto' }, async () => valid && !terminal);
+  // Preview publishes requesting synchronously; unlock before its first await returns.
+  inputMeter.unlock();
+  return starting;
+}
+retry.addEventListener('click', () => { if (!retry.disabled) void startPreview(); });
 el('guest-stop').addEventListener('click', () => {
   if (attached || preview.state.phase === 'requesting') preview.stop();
-  else if (valid && admitted && !terminal) void preview.start({ camera: camera.value, microphone: microphone.value,
-    height: 'auto' }, async () => valid);
+  else if (valid && admitted && !terminal && !retry.disabled) void startPreview();
 });
-el('guest-mute').addEventListener('click', () => preview.setMicrophoneMuted(!preview.microphoneMuted));
+el('guest-mute').addEventListener('click', () => {
+  preview.setMicrophoneMuted(!preview.microphoneMuted);
+  if (attached && !preview.microphoneMuted) inputMeter.unlock();
+});
 el('guest-refresh').addEventListener('click', () => void devices());
 el('guest-save-recovery').addEventListener('click', async () => {
   const picker = (window as unknown as { showSaveFilePicker?: (options: object) => Promise<{ createWritable(): Promise<SourceRecoveryWriter> }> }).showSaveFilePicker;
@@ -382,14 +397,17 @@ el('guest-save-recovery').addEventListener('click', async () => {
     status('guest-original-status', 'The recovery file was not completed. Retained data stays in this page; choose Save recovery file again before closing it.', true);
   } finally { buttons(); }
 });
-for (const select of [camera, microphone]) select.addEventListener('change', () => preview.stop('Settings changed. Ask to join to check your selection.'));
+for (const select of [camera, microphone, quality]) select.addEventListener('change', () => {
+  if (select.disabled || !valid || terminal || joining || deviceAccessBusy || originals.busy || preview.state.phase === 'requesting') return;
+  void startPreview();
+});
 consent.addEventListener('change', buttons); name.addEventListener('input', buttons);
 join.addEventListener('click', async () => {
   if (join.disabled) return;
   joining = true; buttons();
   try {
     if (preview.state.phase !== 'live') {
-      await preview.start({ camera: camera.value, microphone: microphone.value, height: 'auto' }, async () => valid);
+      await startPreview();
       if (String(preview.state.phase) !== 'live') {
         status('guest-join-status', 'Camera and microphone must be available before asking to join.', true);
         return;
@@ -405,6 +423,7 @@ join.addEventListener('click', async () => {
   finally { joining = false; buttons(); }
 });
 el('guest-leave').addEventListener('click', () => {
+  originals.leave(); // CodexBWAI — preserve final slices/delivery before stopping devices.
   terminal = true; valid = false; deviceAccess.cancel(); preview.stop(); buttons();
   const leaving = api('leave'); forgetInvite(tabStore(), diskStore(), storagePrefix);
   status('invitation-status', 'You left this invitation. Your devices are off.');

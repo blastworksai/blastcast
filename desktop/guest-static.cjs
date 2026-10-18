@@ -8,6 +8,7 @@ const assets = new Map([
   // ClaudeBWAI — where the guest page moves itself (history.replaceState in guest.ts); a reload there shows the page again.
   ['/guest', ['guest.html', 'text/html; charset=utf-8']],
   ['/guest.js', ['guest.js', 'text/javascript']],
+  ['/guest-meter.js', ['guest-meter.js', 'text/javascript']], // CodexBWAI — guest microphone health and activation
   ['/camera-background.js', ['camera-background.js', 'text/javascript']],
   ['/preview.js', ['preview.js', 'text/javascript']],
   ['/guest-call.js', ['guest-call.js', 'text/javascript']],

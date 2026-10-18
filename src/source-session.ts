@@ -12,6 +12,7 @@ export class SourceSession {
   private polling = false;
   private destroyed = false;
   private saving = false;
+  private departed = false;
   private recoveryIdentity: SourceRecoveryIdentity | null = null;
   private timer: ReturnType<typeof setInterval>;
   constructor(private control: () => Promise<SourceControl>, private transport: SourceTransport,
@@ -26,12 +27,19 @@ export class SourceSession {
       state.phase !== 'idle' && state.phase !== 'complete' && !this.saving);
   }
   update(enabled: boolean, stream: MediaStream | null): void {
-    if (this.enabled === enabled && this.stream === stream) return;
+    if (this.departed || this.destroyed || (this.enabled === enabled && this.stream === stream)) return;
     this.generation++;
     if (this.capture?.busy) void this.capture.fail('Your original was interrupted. Saved partial media is kept; this original is incomplete.');
     if (stream !== this.stream) this.attemptedEpisode = '';
     this.enabled = enabled; this.stream = stream;
     if (enabled && stream) void this.poll();
+  }
+  // CodexBWAI — stop recording before devices detach, but keep its saved delivery alive.
+  leave(): void {
+    if (this.departed || this.destroyed) return;
+    this.departed = true; this.enabled = false; this.stream = null; this.generation++;
+    clearInterval(this.timer);
+    if (this.capture?.busy) void this.capture.stop();
   }
   async poll(): Promise<void> {
     if (this.polling || this.destroyed || !this.enabled) return;

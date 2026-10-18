@@ -274,10 +274,12 @@ function renderPreview(state: PreviewState, stream: MediaStream | null): void {
   } else if (attached !== stream) {
     clearMeter();
     attached = stream; sourcesStale = true;
-    calls.setStream(stream ? getCallStream(stream) : null);
-    if (!stream && !recording.busy) stopSceneStream();
+    // CodexBWAI — local devices do not own admitted calls. Once started, keep the
+    // composed program and mixer alive until studio close; only replace the host input.
+    if (sceneStream) {
+      void calls.replaceHostAudio(stream ?? new MediaStream()).catch(() => status('device-status', 'The microphone could not reach every guest. Ask them to Reconnect.', true));
+    } else if (stream) calls.setStream(getCallStream(stream));
     background.setSource(stream); // ClaudeBWAI — the processed camera feeds the preview, the scene and the host original
-    element('preview-empty').hidden = Boolean(stream);
     video.toggleAttribute('data-live', Boolean(stream));
     showBackendCanvas(); // ClaudeBWAI — einh 4 Oct (CP4c): the preview shows the active backend's canvas, never both
     if (stream) {
@@ -698,6 +700,12 @@ let renderGeneration = 0;
 const controls = mountSceneControls({
   container: controlsContainer,
   resolveAsset,
+  arrange: {
+    viewfinder: canvas.parentElement!,
+    load: () => window.blastcast.loadSceneArrangements(),
+    save: (id,frames) => window.blastcast.saveSceneArrangement(id,frames),
+    reset: id => window.blastcast.resetSceneArrangement(id),
+  },
   customBackdrop: id => Boolean(backdropOverrides[id]),
   onSceneSelected: scene => { sourcesStale = true; element('preview-heading').textContent=scene.label; sceneSelection++; sceneReady = false; sceneError = ''; status('scene-status', 'Loading selected scene…'); readiness(); },
 });
@@ -713,8 +721,9 @@ function showBackendCanvas(): void {
   canvas.style.display = activeBackend === 'webgl2' ? 'none' : 'block'; glCanvas.style.display = activeBackend === 'webgl2' ? 'block' : 'none';
 }
 function restartSceneStream(): void {
+  const streaming = Boolean(sceneStream);
   stopSceneStream();
-  if (attached) {
+  if (attached || streaming) {
     sceneStream = activeCanvas().captureStream(30);
     void calls.replaceProgramVideo(sceneStream.getVideoTracks()[0] ?? null).catch(() => status('device-status', 'The new quality could not reach every guest. Ask them to Reconnect.', true));
   }
@@ -760,13 +769,14 @@ function selectBackend(): void {
 function setOutputQuality(height: 1080 | 2160): void {
   const width = height === 2160 ? 3840 : 1920;
   if (canvas.width !== width || canvas.height !== height) {
+    const streaming = Boolean(sceneStream);
     stopSceneStream();
     canvas.width = width;
     canvas.height = height;
     glCanvas.width = width; glCanvas.height = height; glCompositor?.resize(width, height);
     // ClaudeBWAI — Codex review of 68ea271 (P2): the guests' program video was the scene track just stopped; hand every call
     // the new one (replaceTrack on the video sender, no renegotiation). A one-device change no longer rebuilds the calls.
-    if (attached) {
+    if (attached || streaming) {
       sceneStream = activeCanvas().captureStream(30);
       void calls.replaceProgramVideo(sceneStream.getVideoTracks()[0] ?? null).catch(() => status('device-status', 'The new quality could not reach every guest. Ask them to Reconnect.', true));
     }
@@ -814,6 +824,8 @@ const refreshSources = createThrottle(() => {
     }];
   }
   const all = [...own, ...calls.sources(), ...screenSource()];
+  // CodexBWAI — guests remain visible when the host has no enabled local device.
+  element('preview-empty').hidden = Boolean(attached) || all.some(source => source.state === 'live' || source.state === 'reconnecting');
   const signature = all.map(source => `${source.kind}:${source.index}:${source.state}:${source.naturalWidth}x${source.naturalHeight}:${drawableId(source.drawable as object)}`).join('|');
   if (signature !== sourceSignature) { sourceSignature = signature; controls.updateSources(all); }
 }, SOURCE_REFRESH_MS);

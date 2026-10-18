@@ -1,8 +1,9 @@
 // CodexBWAI — mixed output and original-source completeness remain independent.
 // ClaudeBWAI — quit policy. Retune ONLY here: how long a silent guest still counts as able to deliver.
 const STALE_MS = 2 * 60 * 1000;
-// A source can still deliver only if its participant is admitted AND has produced a chunk/begin/finish within STALE_MS
-// (guests.status().alive is invitation validity, not a live connection, so activity is the reliable signal).
+// A source can still deliver if its participant is admitted or has pinned departure delivery, and has recent source activity.
+// guests.status().alive is invitation validity, not a live connection; source activity is the reliable signal.
+// Departed guests retain only their pinned original delivery, never call admission.
 // The host is local: it counts only while its own source is not incomplete and recently active.
 const admittedGuest = g => g.alive && !g.revoked && g.phase === 'admitted' && g.session && g.originalsUnsupported !== true;
 // ClaudeBWAI — a guest whose page has gone (guests.cjs presence 'disconnected') is left out of a new take's roster.
@@ -16,11 +17,13 @@ function closePolicy({ busy = false, state, guests = [], staleMs = STALE_MS }) {
   // ClaudeBWAI — Codex review of 68ea271 (P1): delivery safety follows source activity, never the UI's presence row. An
   // admitted guest can still deliver while an original request is in flight (uploading) or within STALE_MS of their last
   // stored piece, whatever presence says: a backgrounded phone can hold one upload open past the presence timeout.
-  const admitted = new Map((guests || []).filter(admittedGuest).map(g => [g.session.id, g]));
+  const deliverers = new Map((guests || []).filter(g => admittedGuest(g) ||
+    (g.alive && !g.revoked && g.phase === 'left' && g.session && g.delivery?.episodeId === state.episodeId && g.delivery.epochs.length))
+    .map(g => [g.session.id, g]));
   const incomplete = (state.sources || []).filter(s => s.phase !== 'complete').map(s => ({
     id: s.participantId, label: s.label,
-    connected: !state.recovered && (s.participantId === 'host' || admitted.has(s.participantId)) &&
-      (admitted.get(s.participantId)?.uploading === true || (typeof s.idleMs === 'number' && s.idleMs <= staleMs)),
+    connected: !state.recovered && (s.participantId === 'host' || deliverers.has(s.participantId)) &&
+      (deliverers.get(s.participantId)?.uploading === true || (typeof s.idleMs === 'number' && s.idleMs <= staleMs)),
   }));
   const recovered = Boolean(state.recovered);
   const overdue = state.incompleteOverrideInMs === 0;
@@ -126,12 +129,12 @@ function createSourceController({ recording, sources, guests, confirmIncomplete 
       const state = baseStatus();
       if (!state || (state.phase === 'closed' && !state.closing)) return { ok: true };
       if (!state.allSourcesComplete && !state.closing && !policyFor(state).canClose) {
-        return failed('A connected guest is still sending their original. Keep the studio open until it arrives or they leave.');
+        return failed('A connected guest is still sending their original. Keep the studio open until it arrives or delivery stops.');
       }
       if (!state.allSourcesComplete && !state.closing && !await confirmIncomplete()) return failed('Originals are still pending. Keep the studio and guest pages open.');
       // The confirmation dialog waited on the host: re-check that nobody started delivering again meanwhile.
       if (!state.allSourcesComplete && !state.closing && !policyFor(baseStatus()).canClose) {
-        return failed('A connected guest is still sending their original. Keep the studio open until it arrives or they leave.');
+        return failed('A connected guest is still sending their original. Keep the studio open until it arrives or delivery stops.');
       }
       return sources.closeEpisode(state.episodeId);
     },

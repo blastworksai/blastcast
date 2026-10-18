@@ -31,8 +31,8 @@ class FakeAudioNode {
   connect(dest) {
     this.connections.push(dest);
   }
-  disconnect() {
-    this.connections = [];
+  disconnect(destination) {
+    this.connections = destination ? this.connections.filter(item => item !== destination) : [];
   }
 }
 
@@ -242,4 +242,22 @@ test('monitoring off preserves mixed output while guest mute silences both branc
   assert.ok(Math.abs(guest.gainNode.gain.value - Math.pow(10,-6/20)) < 0.0001);
   await mixer.close();
   assert.equal(stream.getTracks()[0].stopped, false);
+});
+
+// CodexBWAI — each caller must hear everyone else, never their own microphone.
+test('recipient returns exclude self, survive microphone replacement and release only owned output', async () => {
+  const host = new FakeMediaStream([new FakeMediaStreamTrack()]);
+  const mixer = new HostAudioMixer(host);
+  const a = mixer.getReturnStream('a');
+  mixer.addGuest('a', new FakeMediaStream([new FakeMediaStreamTrack()]));
+  mixer.addGuest('b', new FakeMediaStream([new FakeMediaStreamTrack()]));
+  const b = mixer.getReturnStream('b');
+  const destinations = [mixer.returns.get('a'), mixer.returns.get('b')];
+  const connections = () => [mixer.hostSource, mixer.guests.get('a').gainNode, mixer.guests.get('b').gainNode]
+    .map(node => destinations.map(destination => node.connections.includes(destination)));
+  assert.deepEqual(connections(), [[true, true], [false, true], [true, false]]);
+  mixer.setHostStream(new FakeMediaStream([new FakeMediaStreamTrack()]));
+  assert.deepEqual([mixer.getReturnStream('a') === a, ...connections()], [true, [true, true], [false, true], [true, false]]);
+  mixer.releaseReturn('a'); await mixer.close();
+  assert.deepEqual([a.getTracks()[0].stopped, b.getTracks()[0].stopped, host.getTracks()[0].stopped], [true, true, false]);
 });

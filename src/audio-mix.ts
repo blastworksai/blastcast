@@ -5,6 +5,7 @@ export class HostAudioMixer {
   private closing: Promise<void> | null = null;
   private ctx: AudioContext;
   private mixedDestination: MediaStreamAudioDestinationNode;
+  private returns = new Map<string, MediaStreamAudioDestinationNode>();
   private hostSource: MediaStreamAudioSourceNode | null = null;
   private monitor: GainNode;
   private mutedGuests = new Set<string>();
@@ -46,6 +47,7 @@ export class HostAudioMixer {
     if (hostStream.getAudioTracks().length) {
       this.hostSource = this.ctx.createMediaStreamSource(hostStream);
       this.hostSource.connect(this.mixedDestination);
+      for (const destination of this.returns.values()) this.hostSource.connect(destination);
     }
   }
 
@@ -85,6 +87,7 @@ export class HostAudioMixer {
       source.connect(gainNode);
       gainNode.connect(this.monitor);
       gainNode.connect(this.mixedDestination);
+      for (const [recipient, destination] of this.returns) if (recipient !== id) gainNode.connect(destination);
       this.guests.set(id, { stream: originalStream, source, analyzer, gainNode });
     } catch (error) {
       owned.forEach(node => node.disconnect());
@@ -139,6 +142,28 @@ export class HostAudioMixer {
     return this.mixedDestination.stream;
   }
 
+  // CodexBWAI — stable per-call mix-minus tracks keep other guests audible without self echo.
+  getReturnStream(id: string): MediaStream {
+    if (this.closed) throw new Error('AudioContext is closed');
+    let destination = this.returns.get(id);
+    if (!destination) {
+      destination = this.ctx.createMediaStreamDestination();
+      this.returns.set(id, destination);
+      this.hostSource?.connect(destination);
+      for (const [guestId, guest] of this.guests) if (guestId !== id) guest.gainNode.connect(destination);
+    }
+    return destination.stream;
+  }
+
+  releaseReturn(id: string): void {
+    const destination = this.returns.get(id);
+    if (!destination) return;
+    this.hostSource?.disconnect(destination);
+    for (const [guestId, guest] of this.guests) if (guestId !== id) guest.gainNode.disconnect(destination);
+    destination.stream.getTracks().forEach(track => track.stop());
+    this.returns.delete(id);
+  }
+
   getGuestSource(id: string): MediaStream | undefined {
     return this.guests.get(id)?.stream;
   }
@@ -173,6 +198,7 @@ export class HostAudioMixer {
 
   close(): Promise<void> {
     if (this.closing) return this.closing;
+    for (const id of this.returns.keys()) this.releaseReturn(id);
     this.closed = true;
     // Closing stops only owned output tracks
     const tracks = this.mixedDestination.stream.getTracks();

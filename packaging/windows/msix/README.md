@@ -19,3 +19,9 @@ Sources (learn.microsoft.com):
 - https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-manual-conversion
 - https://learn.microsoft.com/en-us/windows/msix/package/create-app-package-with-makeappx-tool
 - https://learn.microsoft.com/en-us/windows/uwp/packaging/app-capability-declarations
+
+## Paid Microsoft Store activation
+
+CodexBWAI — Store purchase replaces the separate activation key. Electron’s read-only `process.windowsStore === true` flag selects the always-active Store licence in the desktop main process and removes the direct-download update link. The renderer receives the existing `app-store` licence status and removes its key controls. Unpackaged direct downloads keep key activation; Mac App Store helper and bookmark behavior stay scoped to `process.mas`. Do not configure a Store free trial: trial entitlement is not implemented.
+
+Runtime flag reference: https://www.electronjs.org/docs/latest/api/process#processwindowsstore-readonly . Running the unpacked executable does not exercise the MSIX flag; installed-package acceptance remains a separate observation.

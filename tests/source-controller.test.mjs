@@ -114,7 +114,7 @@ test('closeSources refuses (and never confirms) while a guest is still sending, 
   f.setSnapshot(sending);
   assert.equal(f.controller.sourceStatus().canFinishIncomplete, false);
   const refused = await f.controller.closeSources();
-  assert.deepEqual(refused, { ok: false, message: 'A connected guest is still sending their original. Keep the studio open until it arrives or they leave.' });
+  assert.deepEqual(refused, { ok: false, message: 'A connected guest is still sending their original. Keep the studio open until it arrives or delivery stops.' });
   assert.equal(f.events.includes('confirm'), false);
   // Nobody sending when the dialog opens, but the guest resumes before the host answers: nothing is closed.
   f.setConfirm(true);
@@ -197,4 +197,13 @@ test('source IPC pins host identity and refuses foreign or child frames and over
   assert.throws(() => append(event, {}, new ArrayBuffer(8 * 1024 * 1024 + 1)), /Invalid host source/);
   assert.throws(() => append(event, {}, bytes, 'guest'), /Invalid host source/);
   assert.equal(calls.length, 1);
+});
+
+// CodexBWAI — leaving the call must not make an active original safe to close.
+test('departure delivery blocks close for its pinned episode, including a slow upload in flight',()=>{
+  const departed={...here[0],phase:'left',delivery:{episodeId:'e',epochs:['original']},uploading:true};
+  const state=saved({sources:[{...saved().sources[1],idleMs:121000}]});
+  assert.equal(closePolicy({state,guests:[departed]}).canClose,false);
+  assert.equal(closePolicy({state,guests:[{...departed,revoked:true}]}).canClose,true);
+  assert.equal(closePolicy({state,guests:[{...departed,delivery:{episodeId:'other',epochs:['original']}}]}).canClose,true);
 });

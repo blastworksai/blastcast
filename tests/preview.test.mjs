@@ -28,7 +28,9 @@ test('requests 1080p or 4K host capture and automatic guest capture up to 4K', (
   const automatic = constraints({ ...selection, height: 'auto' });
   assert.equal(automatic.video.height.ideal, 2160);
   assert.equal(automatic.video.width.ideal, 3840);
-  assert.throws(() => constraints({ ...selection, height: 720 }));
+  assert.deepEqual(constraints({ ...selection, height: 720 }).video.height, { ideal: 720, max: 720 });
+  assert.deepEqual([720, 1080, 2160, 'auto'].map(height => constraints({ ...selection, height }).video.aspectRatio),
+    Array(4).fill({ ideal: 16 / 9 }));
 });
 test('denied or cancelled app permission never acquires devices', async () => {
   let calls = 0;
@@ -244,4 +246,65 @@ test('a preview stopped while the first ask is pending does not ask again', asyn
 test('relaxedVideo leaves out max when the original had none', () => {
   const relaxed = relaxedVideo({ video: { width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false });
   assert.deepEqual(relaxed.video.width, { ideal: 1920 }); assert.equal('max' in relaxed.video.height, false);
+});
+
+// CodexBWAI — guest compatibility policy: recover settings refusal without changing
+// selected devices/audio, never retry denial, and never reacquire after cancellation.
+test('guest settings refusal uses one compatible 720p ask and becomes live', async () => {
+  const seen = []; const acquired = stream();
+  const preview = new Preview(async c => { seen.push(c); if (seen.length === 1) throw overconstrained(''); return acquired; }, () => {}, { compatibleVideoFallback: true });
+  await preview.start({ camera: 'cam', microphone: 'mic', height: 1080 }, allow);
+  assert.deepEqual(seen.map(c => c.video), [constraints({ camera: 'cam', microphone: 'mic', height: 1080 }).video,
+    constraints({ camera: 'cam', microphone: 'mic', height: 720 }).video]);
+  assert.deepEqual(seen[1].audio, seen[0].audio);
+  assert.equal(preview.state.phase, 'live'); preview.stop();
+});
+test('guest compatible fallback stays bounded, preserves denial and honors stop', async () => {
+  const results = [];
+  for (const mode of ['denied', 'device', 'exhausted', 'cancel']) {
+    let calls = 0; let reject;
+    const preview = new Preview(async () => {
+      calls++;
+      if (mode === 'cancel') return new Promise((_, r) => { reject = r; });
+      throw mode === 'denied' ? Object.assign(new Error(), { name: 'NotAllowedError' }) : overconstrained(mode === 'device' ? 'deviceId' : 'frameRate');
+    }, () => {}, { compatibleVideoFallback: true });
+    const pending = preview.start({ ...selection, height: 1080 }, allow);
+    if (mode === 'cancel') { await Promise.resolve(); preview.stop(); reject(overconstrained('height')); }
+    await pending; results.push([calls, preview.state.phase]);
+  }
+  assert.deepEqual(results, [[1, 'error'], [1, 'error'], [3, 'error'], [1, 'idle']]);
+});
+
+// CodexBWAI — Kimi review: a soft fallback may return a mode above the
+// selected ceiling. Release it and explain which selection needs changing.
+test('guest fallback above selected quality gives actionable feedback and releases devices', async () => {
+  const acquired = stream({ width: 1920, height: 1080 }); let calls = 0;
+  const preview = new Preview(async () => { if (++calls === 1) throw overconstrained('height'); return acquired; }, () => {}, { compatibleVideoFallback: true });
+  await preview.start({ ...selection, height: 720 }, allow);
+  assert.equal(preview.state.phase, 'error');
+  assert.match(preview.state.message, /selected 720p.*Choose Auto or another camera/);
+  assert.ok(acquired.tracks.every(t => t.stopped === 1));
+});
+
+// CodexBWAI — owner Mac acceptance: explicit 720p works where Auto fails.
+// Auto must visit that exact request, then soft ideals only if still refused.
+test('guest Auto visits explicit 720p before soft fallback and names the final constraint', async () => {
+  const seen = [];
+  const preview = new Preview(async c => { seen.push(c); throw overconstrained('frameRate'); }, () => {}, { compatibleVideoFallback: true });
+  await preview.start({ ...selection, height: 'auto' }, allow);
+  assert.deepEqual(seen.map(c => c.video.height), [{ ideal: 2160, max: 2160 }, { ideal: 720, max: 720 }, { ideal: 720 }]);
+  assert.deepEqual(seen.map(c => c.video.aspectRatio), Array(3).fill({ ideal: 16 / 9 }));
+  assert.match(preview.state.message, /frame rate/);
+  assert.doesNotMatch(preview.state.message, /private driver detail/);
+});
+
+// CodexBWAI: landscape is a preference, not permission to reject or reshape
+// a working portrait camera. Hardware orientation still needs real acceptance.
+test('guest landscape preference preserves a portrait source returned by the browser', async () => {
+  const acquired = stream({ width: 1080, height: 1920 }); let shown;
+  const preview = new Preview(async () => acquired, (_, s) => { shown = s; }, { compatibleVideoFallback: true });
+  await preview.start({ ...selection, height: 'auto' }, allow);
+  assert.deepEqual([preview.state.phase, shown === acquired, shown.getVideoTracks()[0].getSettings()],
+    ['live', true, { width: 1080, height: 1920 }]);
+  preview.stop();
 });
