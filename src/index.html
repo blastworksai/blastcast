@@ -11,10 +11,9 @@
         <div class="viewfinder">
           <video id="preview" autoplay playsinline muted aria-label="Your camera preview" hidden></video>
           <canvas id="composed" width="1920" height="1080" aria-label="Composed scene preview" class="composed-canvas"></canvas>
-          <div id="preview-empty" class="empty-preview"><div class="camera-icon" aria-hidden="true">◉</div>
-            <h3>Preview off</h3><p>Enable your camera or microphone to begin.</p></div>
-
         </div>
+          <div id="preview-empty" class="empty-preview" role="status"><span class="camera-icon" aria-hidden="true">◉</span>
+            <h3>Preview off</h3><p>Enable your camera or microphone to begin.</p></div>
           <div class="viewfinder-footer"><span class="host-tag">You <span>HOST</span></span><span id="resolution-label">Camera off</span><span id="output-label">Recording output 1920×1080</span></div>
 <div id="scene-controls-container" class="scene-controls-container"></div>
 <div class="screen-controls"><button id="share-screen" class="secondary">Share screen</button><label for="screen-source">Screen in scene</label><select id="screen-source" aria-describedby="screen-status"><option value="none">No screen</option></select></div><p id="screen-share-prompt" class="small screen-share-prompt" role="status" hidden>A guest is sharing a screen. Choose a screen to place it in the scene.</p><p id="screen-status" class="small status" role="status">Screen sharing is off.</p>

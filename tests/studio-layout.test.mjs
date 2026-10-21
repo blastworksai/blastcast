@@ -39,3 +39,10 @@ describe('Record disabled reason is a visible line under Record', () => {
       assert.ok(rule[1].includes(part), part);
   });
 });
+
+// CodexBWAI — BCAST-23: the idle notice must not cover scene labels or borders.
+describe('Preview-off status strip', () => {
+  it('places the idle notice after the preview and before the preview footer', () => {
+    assert.match(html, /<canvas id="composed"[^>]*><\/canvas>\s*<\/div>\s*<div id="preview-empty"[^>]*>[\s\S]*?<\/div>\s*<div class="viewfinder-footer">/);
+  });
+});
